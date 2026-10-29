@@ -52,7 +52,10 @@ def _git(repo: Path, *arguments: str) -> None:
 
 class ContainerQa:
     """A cut-over repository whose approved QA dispatch pins a container ``operations.qa`` plan,
-    the runtime that serves it and the scripted engine on its ``PATH``."""
+    the runtime that serves it and the scripted engine on its ``PATH``.
+
+    ``engine``, the image tags and ``gate`` default to the scripted Podman setup; with
+    ``scripted_engine=False`` the runtime keeps the host ``PATH`` and its real engine (#710)."""
 
     def __init__(
         self,
@@ -63,12 +66,18 @@ class ContainerQa:
         hosts: list[str] | None = None,
         cache: Path | None = None,
         lease_ttl: int | None = None,
+        engine: str = "podman",
+        worker_tag: str = WORKER_TAG,
+        proxy_tag: str = PROXY_TAG,
+        gate: list[str] | None = None,
+        scripted_engine: bool = True,
     ) -> None:
+        gate = GATE if gate is None else gate
         self.fx = coordinator_tests.CoordinatorRetryRoutingTests()
         self.fx.setUp()
         repo = self.repo = self.fx.repo
         (repo / ".harness/project.json").write_text(
-            json.dumps({"qa_gate_commands": GATE}), encoding="utf-8"
+            json.dumps({"qa_gate_commands": gate}), encoding="utf-8"
         )
         _git(repo, "add", "-A")
         _git(repo, "commit", "-m", "declare the QA gate")
@@ -79,9 +88,9 @@ class ContainerQa:
         self.candidate = self.fx._accepted_candidate(self.batch)
         self.fx._reported_review(self.batch, self.candidate)
         self.fx._decide(self.batch, "accept")
-        container: JsonObject = {"engine": "podman", "worker_image": WORKER_TAG}
+        container: JsonObject = {"engine": engine, "worker_image": worker_tag}
         if hosts:
-            container["proxy_image"] = PROXY_TAG
+            container["proxy_image"] = proxy_tag
         qa: JsonObject = {"container": container, "environment": [SECRET_NAME]}
         if hosts is not None:
             qa["network"] = {"hosts": hosts}
@@ -93,7 +102,7 @@ class ContainerQa:
                 "operations": {"qa": qa},
             },
             "extensions": {"runtime_access": "docker"},
-            "verification_commands": GATE,
+            "verification_commands": gate,
             "execution_policy": {
                 "qa_command_timeout_seconds": timeout,
                 "stop_grace_seconds": 1,
@@ -110,14 +119,13 @@ class ContainerQa:
             json.dumps(config), encoding="utf-8"
         )
         (repo / ".harness/.sandboxes/scratch").mkdir(parents=True, exist_ok=True)
-        self.engine = ScriptedEngine(tmp / "engine")
+        self.engine = ScriptedEngine(tmp / "engine", engine)
         self.engine.update(
-            lambda state: state["images"].update({WORKER_TAG: WORKER_BARE, PROXY_TAG: "b" * 64})
+            lambda state: state["images"].update({worker_tag: WORKER_BARE, proxy_tag: "b" * 64})
         )
         assert migrate(repo).returncode == 0
-        self.runtime = ServingRuntime(
-            repo, env={"PATH": str(self.engine.bin), SECRET_NAME: SECRET}
-        )
+        engine_path = {"PATH": str(self.engine.bin)} if scripted_engine else {}
+        self.runtime = ServingRuntime(repo, env={**engine_path, SECRET_NAME: SECRET})
         self.dispatch = self.create()
 
     def run(self, *command: str) -> tuple[int, JsonObject | None, str]:

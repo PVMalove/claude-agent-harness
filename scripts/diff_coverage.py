@@ -19,10 +19,12 @@ COVERAGE_JSON_FILE = ROOT / ".coverage.diff-coverage.json"
 # Bound for the helper commands (git, `coverage json`); the measured test run itself is unbounded.
 HELPER_TIMEOUT_SECONDS = 300
 # Verified by the clean-room run (scripts/verify.py), not by the unittest suite this gate measures,
-# so their changed lines could never count as covered.
+# so their changed lines could never count as covered. The real Docker smoke runs only in its own
+# CI job: the default pytest run this gate measures deselects the `docker_smoke` marker.
 EXCLUDED_FROM_GATE = frozenset(
     {
         "scripts/test_clean_room.py",
+        "tests/orchestration/test_docker_smoke.py",
         "harness/project/hooks/qa-gate-state.py",
         "harness/project/hooks/tracker-issue.py",
         "harness/project/hooks/pr_commands.py",
