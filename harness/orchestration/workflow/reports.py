@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.orchestration import operational_hold
 from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -102,6 +103,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _write_exclusive,
     _write_record,
     _write_text_exclusive,
+    persist_writes,
 )
 from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
@@ -225,6 +227,7 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         progress = dispatch.get("preserved_progress")
         if (
             progress is not None
@@ -681,6 +684,23 @@ def _checkpoint_base(
     return rebase.report_base(repo, root, batch, dispatch)
 
 
+def _require_no_hold_keeping(
+    root: Path, ledger: LifecycleLedger, dispatch: JsonObject, submitted: JsonObject
+) -> None:
+    """Refuse a report or checkpoint of a held batch.  The refused submission is kept first as
+    unaccepted evidence -- no report, checkpoint or decision -- so the worker's output outlives
+    the hold, and the refusal names where it is."""
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
+    except operational_hold.OperationalHoldError as exc:
+        path = capture_unaccepted(root, dispatch, submitted, exc)
+        persist_writes(ledger)
+        exc.remedy = f"{exc.remedy}; unaccepted evidence: {path}"
+        raise
+
+
 def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a non-terminal checkpoint for an in-flight write-role dispatch so its worker session
     can end here and a fresh session can resume the same dispatch later.
@@ -697,6 +717,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
+        _require_no_hold_keeping(root, ledger, dispatch, checkpoint)
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
             capture_unaccepted,
@@ -1997,6 +2018,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
+        _require_no_hold_keeping(root, ledger, dispatch, report)
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
             capture_unaccepted,

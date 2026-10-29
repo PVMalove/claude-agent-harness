@@ -13,7 +13,7 @@ import hashlib
 import uuid
 from pathlib import Path
 
-from harness.orchestration import extensions, operational_guards
+from harness.orchestration import extensions, operational_guards, operational_hold
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -111,14 +111,37 @@ def _stale_dispatch_finding(
     )
 
 
+def _held(root: Path, batch_id: object) -> operational_hold.Hold | None:
+    """The operational hold of the batch in the runtime store (ADR 0026), read through the
+    command's state view; the file-ledger epoch keeps none."""
+    if not isinstance(batch_id, str):
+        return None
+    return operational_hold.current_hold(root, batch_id)
+
+
+def _hold_finding(held: operational_hold.Hold) -> dict[str, str]:
+    """The attention a hold raises; a new hold (another revision) raises it again."""
+    return operational_guards.attention_finding(
+        "operational-hold",
+        f"{held.batch_id}:{held.step}:{held.revision}",
+        last_safe_action=f"the runtime store holds batch {held.batch_id} ({held.reason}): "
+        f"{held.message}; no dispatch, decision or abandon was recorded and every brief, report "
+        "and candidate is unchanged",
+        recommended_human_action=held.remedy,
+    )
+
+
 def _attention_findings(
     repo: Path, root: Path, config: JsonObject, batch: JsonObject, moment: str
 ) -> list[dict[str, str]]:
-    """Every reason the batch currently needs a human, from ledger facts only. Nothing here changes
-    the lifecycle, deletes evidence or touches the candidate."""
+    """Every reason the batch currently needs a human, from ledger facts and the batch's
+    operational hold only. Nothing here changes the lifecycle, deletes evidence or touches the
+    candidate."""
     policy = _attention_policy(config)
     now = _moment(moment, "attention moment")
     findings: list[dict[str, str]] = []
+    if (held := _held(root, batch.get("batch_id"))) is not None:
+        findings.append(_hold_finding(held))
     entries = batch.get("dispatches", [])
     last = entries[-1] if entries else None
     decision = last.get("decision") if last else None

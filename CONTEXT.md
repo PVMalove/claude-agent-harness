@@ -516,6 +516,19 @@ retry, долго стоящем retry, устаревшем Context Package/bas
 dispatch не создаётся; evidence и candidate не трогаются. Снимает его только человек.
 _Avoid_: `blocked` (терминальное состояние), автоматический сброс по таймауту.
 
+**Операционное удержание** (operational hold, `recovery/hold/<batch_id>.json`):
+Запись runtime store (`operationalHold.v1`), которая останавливает batch на неизвестных,
+отсутствующих или нечитаемых системных данных вместо решения. Удержанный batch отказывает в
+переходах lifecycle и запуске worker-ов до `recovery resume`; запись решает Python, а пишет Rust
+store. Удержание не меняет lifecycle, решения и approval; терминальный batch не удерживается.
+_Avoid_: suspended, quarantine, `blocked` (lifecycle-состояние), abandon по умолчанию.
+
+**Durable intent восстановления** (recovery intent, `recovery/intent/<batch_id>.json`):
+Запись runtime store (`recoveryIntent.v1`), которую команда `recovery` пишет до действия и
+завершает после него. Прерванное действие остаётся `interrupted`, и повтор команды его завершает;
+finish пишет, только пока сохранённый correlation ID принадлежит этой команде.
+_Avoid_: журнал recovery, lock восстановления.
+
 **Retry idempotency key** (`retry_idempotency_key`):
 SHA-256 от роли, candidate SHA, base SHA, review scope, reason category и digest verification commands
 для `architect`/`code-review`/`qa`/publish. Два активных dispatch с одним ключом запрещены; завершённый

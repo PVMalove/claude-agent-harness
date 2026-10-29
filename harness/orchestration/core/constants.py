@@ -734,6 +734,7 @@ AUTO_STOP_REASONS = {
         "harness-snapshot-changed",
         "deterministic-gate-failed",
         "ledger-validation-failed",
+        "operational-hold",
     ),
     "no-automatic-route": (
         "unknown-reason",

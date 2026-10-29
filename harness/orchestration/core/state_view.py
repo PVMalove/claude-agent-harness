@@ -56,6 +56,7 @@ RECORD_DIRECTORIES = frozenset(
         "qa-lane",
         "qa-artifacts",
         "audit",
+        "recovery",
     }
 )
 
@@ -346,6 +347,9 @@ class StoreUnit:
         stem = name.removesuffix(".json")
         if directory in {"batches", "plans"}:
             return stem
+        if directory == "recovery":
+            # ``recovery/<hold|intent>/<batch_id>.json``: the batch is the last segment.
+            return stem.rpartition("/")[2]
         if directory == "dispatches":
             batch = record.get("batch_id") if record else None
             return batch if isinstance(batch, str) else None

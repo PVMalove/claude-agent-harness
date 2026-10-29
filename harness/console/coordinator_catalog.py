@@ -1,8 +1,8 @@
 """Каталог команд раздела Orchestration: декларативные структуры данных стандартной библиотеки,
 полученные интроспекцией активного парсера аргументов координатора (`harness.orchestration.coordinator.parser()`)
 и охватывающие доступные оператору подкоманды координатора, перечисленные в `_TARGETS` (batch, decide,
-decision packet, dispatch, qa status, risk, context-package, ledger status, ledger lock-status и
-ledger release-lock).
+decision packet, recovery status, recovery reload, recovery resume, dispatch, qa status, risk,
+context-package, ledger status, ledger lock-status и ledger release-lock).
 
 В отличие от `harness/console/catalog.py`, где `CatalogEntry.argv` задан вручную, каждый кортеж
 `CoordinatorCommand.fields` строится обходом реального дерева `argparse.ArgumentParser` CLI координатора.
@@ -77,6 +77,27 @@ _TARGETS: tuple[_Target, ...] = (
         "batch-attention-resolve",
         ("batch", "attention", "resolve"),
         "Снять сигнал внимания с batch",
+        "batch",
+        _TERMINAL,
+    ),
+    _Target(
+        "recovery-status",
+        ("recovery", "status"),
+        "Статус восстановления batch",
+        "batch",
+        _REVERSIBLE,
+    ),
+    _Target(
+        "recovery-reload",
+        ("recovery", "reload"),
+        "Перечитать конфигурацию для восстановления",
+        "batch",
+        _REVERSIBLE,
+    ),
+    _Target(
+        "recovery-resume",
+        ("recovery", "resume"),
+        "Возобновить удержанный batch",
         "batch",
         _TERMINAL,
     ),

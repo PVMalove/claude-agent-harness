@@ -23,7 +23,8 @@ from typing import Protocol, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
-from . import hook_policy, operation_access, operational_guards, qa_lease, verification_plan
+from . import hook_policy, operation_access, operational_guards, operational_hold, qa_lease
+from . import verification_plan
 from .qa_execution import NO_REPORT_DOMAINS, RuntimeQaPolicy, container_brief, next_attempt
 from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
@@ -1050,6 +1051,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     with _lock(ledger):
         dispatch = ops._load_dispatch(root, args.dispatch)
         batch = ops._load_batch(root, dispatch["batch_id"])
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         ops._validate_batch_integrity(root, batch)
         ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
         if dispatch["role"] != "qa":

@@ -817,6 +817,49 @@ fn an_artifact_written_twice_with_the_same_bytes_is_the_same_evidence() {
 }
 
 #[test]
+fn unaccepted_evidence_is_written_once_and_never_replaced_or_deleted() {
+    let repo = cut_over("unaccepted-evidence");
+    let path = format!("unaccepted-evidence/{DISPATCH}-0001.json");
+    let content = canonical(&json!({
+        "dispatch_id": DISPATCH,
+        "accepted": false,
+        "input": {"dispatch_id": DISPATCH},
+        "diagnostic": "the batch is held",
+        "remedy": "run recovery resume",
+    }));
+    let evidence = |id: &str| {
+        write(
+            &repo.state(),
+            &request(
+                id,
+                None,
+                None,
+                json!([{"op": "create_artifact", "path": path, "content": content}]),
+            ),
+        )
+    };
+
+    evidence("op-1").unwrap();
+    evidence("op-2").unwrap();
+
+    let (record, revision) = stored(&repo, &path).unwrap();
+    assert_eq!(record["accepted"], json!(false));
+    for (id, mutation) in [
+        (
+            "op-replace",
+            json!({"op": "replace", "path": path, "content": content, "expected_revision": revision}),
+        ),
+        (
+            "op-delete",
+            json!({"op": "delete", "path": path, "reason": "x", "expected_revision": revision}),
+        ),
+    ] {
+        let error = write(&repo.state(), &request(id, None, None, json!([mutation]))).unwrap_err();
+        assert_eq!(code(&error), ErrorCode::InvariantViolation, "{mutation}");
+    }
+}
+
+#[test]
 fn a_json_artifact_outside_the_canonical_form_is_kept_as_its_bytes() {
     let repo = cut_over("artifact-bytes");
     let path = "qa-artifacts/evidence.stage-evidence.json";
@@ -913,4 +956,166 @@ fn a_read_names_the_revision_of_every_row_that_has_one() {
             .get(&format!("plans/{BATCH}.json"))
             .is_none()
     );
+}
+
+/// The operational hold of the fixture batch, as the coordinator writes it.
+fn hold_record(batch: &str, state: &str) -> String {
+    canonical(&json!({
+        "batch_id": batch,
+        "contract": "operationalHold.v1",
+        "failure": null,
+        "state": state,
+        "updated_at": "2026-10-29T00:00:00+00:00",
+    }))
+}
+
+fn hold_path(batch: &str) -> String {
+    format!("recovery/hold/{batch}.json")
+}
+
+#[test]
+fn a_recovery_record_of_a_batch_is_created_then_replaced_under_its_revision() {
+    let repo = cut_over("recovery-write");
+    let intent_path = format!("recovery/intent/{BATCH}.json");
+    let intent = canonical(&json!({"batch_id": BATCH, "contract": "recoveryIntent.v1"}));
+
+    let created = write(
+        &repo.state(),
+        &request(
+            "op-1",
+            Some(BATCH),
+            None,
+            json!([
+                {"op": "create", "path": hold_path(BATCH), "content": hold_record(BATCH, "held")},
+                {"op": "create", "path": intent_path, "content": intent},
+            ]),
+        ),
+    )
+    .unwrap();
+    let replaced = write(
+        &repo.state(),
+        &request(
+            "op-2",
+            Some(BATCH),
+            None,
+            json!([{"op": "replace", "path": hold_path(BATCH),
+                    "content": hold_record(BATCH, "released"), "expected_revision": 1}]),
+        ),
+    )
+    .unwrap();
+    let stale = write(
+        &repo.state(),
+        &request(
+            "op-3",
+            Some(BATCH),
+            None,
+            json!([{"op": "replace", "path": hold_path(BATCH),
+                    "content": hold_record(BATCH, "held"), "expected_revision": 1}]),
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(created.result["revisions"][hold_path(BATCH)], 1);
+    assert_eq!(created.result["revisions"][&intent_path], 1);
+    assert_eq!(replaced.result["revisions"][hold_path(BATCH)], 2);
+    assert_eq!(code(&stale), ErrorCode::RevisionConflict);
+    let (record, revision) = stored(&repo, &hold_path(BATCH)).unwrap();
+    assert_eq!((record["state"].as_str(), revision), (Some("released"), 2));
+    let actions: Vec<String> = audit_tail(&repo, 3).into_iter().map(|(a, _)| a).collect();
+    assert_eq!(
+        actions,
+        ["immutable-record", "immutable-record", "transition"]
+    );
+}
+
+#[test]
+fn a_recovery_record_is_never_deleted_and_names_the_batch_of_its_path() {
+    let repo = cut_over("recovery-malformed");
+    write(
+        &repo.state(),
+        &request(
+            "op-0",
+            Some(BATCH),
+            None,
+            json!([{"op": "create", "path": hold_path(BATCH), "content": hold_record(BATCH, "held")}]),
+        ),
+    )
+    .unwrap();
+    let audit_before = count(&repo, "audit");
+    let other_batch = hold_record(OTHER_BATCH, "held");
+    let cases = [
+        json!({"op": "delete", "path": hold_path(BATCH), "reason": "x", "expected_revision": 1}),
+        json!({"op": "create", "path": format!("recovery/note/{BATCH}.json"),
+               "content": hold_record(BATCH, "held")}),
+        json!({"op": "create", "path": format!("recovery/hold/x/{BATCH}.json"),
+               "content": hold_record(BATCH, "held")}),
+        json!({"op": "create", "path": format!("recovery/{BATCH}.json"),
+               "content": hold_record(BATCH, "held")}),
+        json!({"op": "create", "path": format!("recovery/intent/{BATCH}.json"),
+               "content": other_batch}),
+        json!({"op": "create", "path": format!("recovery/intent/{BATCH}.json"),
+               "content": canonical(&json!({"contract": "recoveryIntent.v1"}))}),
+        json!({"op": "create_artifact", "path": format!("recovery/intent/{BATCH}.json"),
+               "content": hold_record(BATCH, "held")}),
+        json!({"op": "create_artifact", "path": "recovery/hold/notes.txt", "content": "x"}),
+    ];
+    for (index, case) in cases.iter().enumerate() {
+        let error = write(
+            &repo.state(),
+            &request(&format!("op-{}", index + 1), None, None, json!([case])),
+        )
+        .unwrap_err();
+        assert_eq!(code(&error), ErrorCode::MalformedRequest, "{case}");
+    }
+    assert_eq!(count(&repo, "audit"), audit_before);
+    assert_eq!(stored(&repo, &hold_path(BATCH)).unwrap().1, 1);
+}
+
+#[test]
+fn a_recovery_record_of_a_batch_the_store_does_not_hold_is_not_found() {
+    let repo = cut_over("recovery-orphan");
+    let audit_before = count(&repo, "audit");
+
+    let error = write(
+        &repo.state(),
+        &request(
+            "op-1",
+            None,
+            None,
+            json!([{"op": "create", "path": hold_path(OTHER_BATCH),
+                    "content": hold_record(OTHER_BATCH, "held")}]),
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(code(&error), ErrorCode::NotFound);
+    assert_eq!(count(&repo, "audit"), audit_before);
+    assert!(stored(&repo, &hold_path(OTHER_BATCH)).is_none());
+}
+
+#[test]
+fn a_recovery_record_belongs_to_its_batch_in_the_one_batch_rule() {
+    let repo = cut_over("recovery-one-batch");
+    let audit_before = count(&repo, "audit");
+    let (record, revision) = replaced_batch(&repo, "T-2");
+
+    let error = write(
+        &repo.state(),
+        &request(
+            "op-1",
+            None,
+            None,
+            json!([
+                {"op": "replace", "path": batch_path(), "content": canonical(&record),
+                 "expected_revision": revision},
+                {"op": "create", "path": hold_path(OTHER_BATCH),
+                 "content": hold_record(OTHER_BATCH, "held")},
+            ]),
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(code(&error), ErrorCode::MalformedRequest);
+    assert!(error.message.contains("one batch"), "{}", error.message);
+    assert_eq!(count(&repo, "audit"), audit_before);
 }

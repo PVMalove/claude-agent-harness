@@ -16,6 +16,7 @@ from dataclasses import replace as _vo_replace
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import operational_hold
 from harness.orchestration.contract import (
     ContractError,
     is_clean_path_pattern,
@@ -652,6 +653,7 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
+        operational_hold.require_no_hold(root, args.batch)
         _validate_batch_integrity(root, batch)
         if (
             approvals.auto_configured(core_config._config(repo), batch)

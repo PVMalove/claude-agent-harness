@@ -23,6 +23,7 @@ from harness.orchestration import (
     container_executor,
     hook_policy,
     operation_access,
+    operational_hold,
     runtime_access,
     runtime_probe,
 )
@@ -366,6 +367,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
@@ -1061,6 +1063,7 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         _validate_dispatch(repo, core_config._config(repo), root, batch, dispatch)
         if dispatch["purpose"] != "publish":

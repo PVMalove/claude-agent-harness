@@ -1518,14 +1518,16 @@ python .harness/orchestration/coordinator.py --repo . batch auto-decide --batch 
 
 | `category` | `reason` |
 | --- | --- |
-| `integrity-failure` | `stale`, `model-mismatch`, `worktree-mismatch`, `harness-snapshot-changed`, `deterministic-gate-failed`, `ledger-validation-failed` |
+| `integrity-failure` | `stale`, `model-mismatch`, `worktree-mismatch`, `harness-snapshot-changed`, `deterministic-gate-failed`, `ledger-validation-failed`, `operational-hold` |
 | `budget-exhausted` | `retry_policy.max_developer_retries`, `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes`, `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` |
 | `no-automatic-route` | `unknown-reason`, `abandon-dead-end`, `supersede-dead-end`, `qa-environment-failure` |
 
 `batch auto-decide` и `batch auto-report` находят остановку в порядке: целостность, бюджет, маршрут.
 Coordinator пишет остановку один раз в `batch.auto_stop` вместе с итоговым отчётом.
-`ledger-validation-failed` команда только выводит: ledger недостоверен. Остановка не создаёт решения
-и не ослабляет валидацию. После остановки каждый шаг batch требует `--approved-by`, а вернуться в
+`ledger-validation-failed` команда только выводит: ledger недостоверен. Остановку `operational-hold`
+политика записывает, когда runtime store удерживает batch: она не решает отчёт и не делает abandon,
+а удержание снимает только `recovery resume` (раздел «Удержание batch и команды `recovery`»).
+Остановка не создаёт решения и не ослабляет валидацию. После остановки каждый шаг batch требует `--approved-by`, а вернуться в
 `auto` batch не может.
 
 Coordinator пишет итоговый отчёт один раз в `batch.auto_report`: при accept отчёта publish или при
@@ -1605,6 +1607,7 @@ candidate и evidence, но запрещает создание следующе
 
 | `attention_reason` | Когда |
 | --- | --- |
+| `operational-hold` | runtime store удерживает batch записью `recovery/hold/<batch_id>.json`; после устранения причины человек разрешает attention, затем `recovery resume` снимает удержание |
 | `unknown-reason` | retry с причиной `unknown` |
 | `infrastructure-retry-repeated` | operational retry одного candidate больше `max_infrastructure_retries` |
 | `tooling-retry-repeated` | третий подряд `tooling-retry` на одном candidate; снимается после исправления инструмента |
@@ -2839,3 +2842,92 @@ branch уже указывает на candidate. Report должен быть `b
 `prohibited_changes` из brief. Чистый worktree должен оставаться на известном startup SHA.
 Команда записывает отдельное startup evidence, расходует continuation budget и требует новой
 self-report/heartbeat. Изменённый scope, неизвестные коммиты или paused batch исключают этот путь.
+
+### Удержание batch и команды `recovery`
+
+Неизвестные, отсутствующие или нечитаемые системные данные не становятся решением (ADR 0026).
+Если строгое чтение отвергает запись batch, `recovery resume` удерживает batch записью
+`recovery/hold/<batch_id>.json` контракта `operationalHold.v1`: состояние `held` и отказ с шагом
+`hold:<причина>`, где причина — `unknown-value`, `missing-value` или `unreadable-record`. Удержание
+не пишет lifecycle-запись, решение или approval, а терминальный batch никогда не удерживается.
+Запись удержания, которую нельзя прочитать, тоже удерживает batch, но её не снимает ни одна команда
+`recovery`: remedy называет `ledger validate --full` и эскалацию человеку.
+
+Пока удержание действует, эти команды отказывают кодом 2, ничего не пишут и называют в `REMEDY`
+маршрут восстановления: `dispatch propose` и `dispatch create`, `dispatch send`,
+`dispatch self-report`, `dispatch checkpoint`, `report submit`, `qa run`, `dispatch publish`,
+`batch decide`, `batch resume`, `batch resume-stop` и `batch rewind`. Реакция на завершённое
+исполнение supervised dispatch тоже ждёт: `dispatch status --dispatch` показывает отказ как
+`reaction_error`, а отчёт остаётся в `pending_report`. `batch auto-decide` при активной политике
+`auto` записывает остановку `integrity-failure`/`operational-hold` и никогда не решает отчёт и не
+делает abandon; без активной политики команда отказывает, как `batch decide`. Доступными остаются
+`dispatch heartbeat`, `dispatch cancel`, `batch abandon`, `batch attention check` и `resolve`,
+`batch decision-packet` и команды чтения. `batch attention check` поднимает attention
+`operational-hold`. Decision packet удержанного batch показывает поле `operational_hold`, пустые
+`options` и `recovery_route.commands`: `recovery status`, `batch attention resolve` (если attention
+поднят) и `recovery resume`.
+
+Recovery никогда не разрешает attention, а `recovery resume` отказывает с `attention-open`, пока
+attention открыт. Поэтому порядок такой: прочитать диагностику, устранить причину, разрешить
+attention, затем снять удержание.
+
+```bash
+python .harness/orchestration/coordinator.py --repo . recovery status --batch <id> --json
+python .harness/orchestration/coordinator.py --repo . recovery reload --batch <id>
+python .harness/orchestration/coordinator.py --repo . batch attention resolve --batch <id> --note '…' --approved-by … --approved-at …
+python .harness/orchestration/coordinator.py --repo . recovery resume --batch <id>
+```
+
+Команды `recovery status|reload|resume|fix|abort --batch <id>` работают только на установленном
+runtime в эпохе `runtime-store`, не читают stdin и не требуют TTY и Textual, поэтому консоль
+вызывает их как процесс:
+
+| Код | stdout | Когда |
+| --- | --- | --- |
+| 0 | документ `recoveryStatus.v1` с `outcome: done` | действие выполнено |
+| 2 | документ `recoveryStatus.v1` с `outcome: refused` | политика отказала; `refusals` и `diagnostics` называют причину |
+| 2 | пусто, `ERROR:` и `REMEDY:` в stderr | команда не может выполниться: эпоха файлового ledger (remedy `harness-runtime migrate`), отказ `runtime_client` (`[runtime_unavailable]`, `[store_busy]`, `[revision_conflict]`), неполное одобрение или прерывание |
+
+Документ `recoveryStatus.v1` — контракт консоли #711. Он содержит `contract`, `action`, `outcome`,
+`batch_id`, `observed_at`, `resumable`, `lifecycle`, `hold`, `checks`, `diagnostics`,
+`skipped_advisories`, `actions`, `intent` и `next`. Каждая из 13 проверок (`config`, `store`,
+`ledger`, `batch`, `lifecycle`, `runtime`, `snapshot`, `context`, `compatibility`, `operation`,
+`liveness`, `attention`, `approval`) показывает статус и диагностику: pointer, отредактированные
+expected и received, подсказку и remedy. Секреты в документ не попадают.
+
+- `status` только читает. `--skip <diagnostic-id>` (повторяемый) на один вызов скрывает advisory из
+  закрытого списка (`config-normalized`) и ничего не пишет.
+- `reload` заново читает и проверяет конфигурацию и hello runtime (протокол 1.5, `store_id`,
+  features `state.read`, `state.write` и `state.recovery`), возвращает это evidence ключом
+  `runtime` и не запускает worker.
+- `resume` в одной единице записи повторяет проверки `status`. Отказ любой проверки ничего не
+  меняет, кроме удержания batch, чью запись отвергает строгое чтение. Иначе команда снимает
+  удержание и реагирует на наблюдаемое исполнение каждого открытого supervised dispatch:
+  завершённое исполнение получает реакцию (шаг `reconcile`), исполнение `unknown` даёт отказ
+  `ambiguous-effect`, а живой worker второй раз не запускается. Записанная остановка продолжается
+  только через аудируемый `batch resume-stop`, для которого `resume` принимает `--approved-by`,
+  `--approved-at` и `--note` (все три вместе или ни одного); иначе нужен `batch rewind`. Документ
+  добавляет `steps` (`hold`, `release`, `reconcile`, `resume-stop`), `refusals`,
+  `dispatch_created: false`, `worker_started: false`, `status` и `next`. `resume` не создаёт
+  dispatch, не переписывает brief и не меняет attention, бюджеты, `auto_stop` и терминальные
+  отказы; следующий переход требует approval с актуальным digest.
+- `fix` показывает безопасную нормализацию конфигурации, а `fix --apply` применяет её транзакцией
+  конфигурации и ничего не возобновляет.
+- `abort` записывает выход из recovery: ничего не делает abandon, не останавливает и не очищает.
+
+`reload`, `resume`, `fix` и `abort` сначала записывают durable intent
+`recovery/intent/<batch_id>.json` (`recoveryIntent.v1`). После cancel, EOF или SIGINT intent
+остаётся `interrupted`, и повтор команды завершает действие. Внутреннее исключение даёт диагностику
+`internal-error` с correlation ID, а не ошибку конфигурации.
+
+Консоль Harness (`harness console`, раздел Orchestration) показывает три записи каталога в группе
+`batch`: `recovery status` и `recovery reload` выполняются без подтверждения, а `recovery resume` —
+терминальное действие coordinator и запрашивает подтверждение. `recovery fix` и `recovery abort`
+доступны только из CLI.
+
+Записи восстановления подчиняются той же authority, что и lifecycle (ADR 0020, ADR 0021): Python
+решает, Rust store пишет.
+
+| Запись | Решает | Пишет | Правила записи |
+| --- | --- | --- | --- |
+| `recovery/hold/<batch_id>.json`, `recovery/intent/<batch_id>.json` | Python: `operational_hold` и `recovery_api` в единице записи команды | Rust store, `state.write` (протокол 1.5, feature `state.recovery`) | только `create`, затем `replace` по revision строки, `delete` отказывает; поле `batch_id` равно id пути; строка batch существует в той же транзакции; одна запись audit на мутацию; миграции схемы нет |

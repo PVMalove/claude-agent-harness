@@ -344,6 +344,10 @@ not recorded by `batch decide`: `report submit` names it in its `completion` obj
 chain after a recorded report stops, and the coordinator completes that chain with
 `report complete --dispatch <dispatch-id>`. `supersede` is not recorded by `batch decide` either:
 `batch create --supersedes` records it once in the new batch's own `coordinator_decisions`.
+`recovery resume` records no route of its own either: it releases an operational hold, and it
+continues a recorded stop only through the audited `batch resume-stop`, whose event takes the route
+this table names. While the runtime store holds a batch, `batch decide` refuses every decision, so
+no route is recorded until `recovery resume` releases the hold (see Operator recovery).
 
 `RecoveryRoute` supplies `RECOVERY_ROUTES`, and `RetryReason` supplies the reason categories.
 Classifier hints and explicit categories are parsed before routing; recorded categories and routes
@@ -533,6 +537,7 @@ detect them in this order: integrity, budget, route.
 | `integrity-failure` | `harness-snapshot-changed` | The installed harness runtime differs from the pinned snapshot |
 | `integrity-failure` | `deterministic-gate-failed` | The commit plan gate, or a failed revalidation of the pending report or its brief |
 | `integrity-failure` | `ledger-validation-failed` | Ledger validation fails; the command shows the stop and records nothing |
+| `integrity-failure` | `operational-hold` | The runtime store holds the batch (`recovery/hold/<batch_id>.json`), or attention `operational-hold`; the policy never decides or abandons, and only `recovery resume` releases the hold |
 | `budget-exhausted` | `retry_policy.max_developer_retries` | A developer-retry beyond the budget |
 | `budget-exhausted` | `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes` | A checkpointed or rate-limited dispatch with a spent budget |
 | `budget-exhausted` | `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` | Attention `infrastructure-retry-repeated` or `tooling-retry-repeated` |
@@ -739,6 +744,63 @@ startup SHA. This spends continuation budget, records separate startup evidence,
 new self-report/heartbeat. It cannot bypass a paused batch or changed progress. After a resume
 awaiting its first self-report, repeating the command is refused without spending another attempt.
 
+### Operational hold and recovery commands
+
+Unknown, missing or unreadable system data never becomes a decision (ADR 0026). When the strict
+read refuses a batch record, `recovery resume` holds the batch in its recovery record
+`recovery/hold/<batch_id>.json` (`operationalHold.v1`: state `held`, failure step `hold:<reason>`,
+reason `unknown-value`, `missing-value` or `unreadable-record`). A hold writes no lifecycle record,
+decision or approval, and a terminal batch is never held. A hold record that cannot be read holds
+its batch too, but no recovery command releases it: its remedy is `ledger validate --full` and a
+human.
+
+While the hold lasts, `dispatch propose`, `dispatch create`, `dispatch send`, `dispatch
+self-report`, `dispatch checkpoint`, `report submit`, `qa run`, `dispatch publish`, `batch decide`,
+`batch resume`, `batch resume-stop` and `batch rewind` refuse with exit code 2, write nothing and
+name the recovery route in `REMEDY`. The reaction to an ended supervised execution waits as well:
+`dispatch status --dispatch` shows the refusal as `reaction_error`, and the report stays
+`pending_report`. Under an active `auto` policy, `batch auto-decide` records the
+`integrity-failure`/`operational-hold` stop and never decides or abandons; without one it refuses
+like `batch decide`. `dispatch heartbeat`, `dispatch cancel`, `batch abandon`, `batch attention
+check` and `resolve`, `batch decision-packet` and the read commands stay available. `batch attention
+check` raises attention `operational-hold`. The decision packet of a held batch shows
+`operational_hold`, empty `options` and `recovery_route.commands`: `recovery status`, `batch
+attention resolve` when attention is raised, and `recovery resume`.
+
+Recovery never resolves attention, and `recovery resume` refuses with `attention-open` while it is
+open. Read the diagnostics, fix the cause, resolve the attention, then release the hold:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery status --batch <id> --json
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch attention resolve \
+  --batch <id> --note "cause fixed" --approved-by <operator> --approved-at <UTC>
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery resume --batch <id>
+```
+
+`recovery status|reload|resume|fix|abort --batch <id>` run only on the installed runtime in the
+`runtime-store` epoch, read no stdin and need no terminal or Textual. Exit code 0 prints the
+`recoveryStatus.v1` document with outcome `done`. Exit code 2 prints the document with outcome
+`refused` for a policy refusal, or no document and `ERROR:`/`REMEDY:` on stderr when the command
+cannot run at all (the file-ledger epoch, a `runtime_client` error, a partial approval or an
+interrupt). `status` only reads; `--skip <diagnostic-id>` hides an allowlisted advisory for one call.
+`reload` re-reads the configuration and the runtime hello (protocol 1.5, features `state.read`,
+`state.write` and `state.recovery`) and starts no worker. `resume` repeats every check in one store
+unit: a refused check changes nothing except holding a batch whose record the strict read refuses;
+otherwise it releases the hold and reacts to the observed execution of every open supervised
+dispatch (`reconcile` for an ended one, `ambiguous-effect` for `unknown`, never a second worker). A
+recorded stop continues only through the audited `batch resume-stop`, with `--approved-by`,
+`--approved-at` and `--note` passed to `resume` together; otherwise use `batch rewind`. `resume`
+creates no dispatch and changes no attention, budget, `auto_stop` or terminal refusal. `fix
+[--apply]` previews or applies a safe configuration normalization and resumes nothing; `abort`
+records the exit from recovery and abandons, stops or cleans nothing. `reload`, `resume`, `fix` and
+`abort` first write the durable intent `recovery/intent/<batch_id>.json` (`recoveryIntent.v1`), so
+an interrupted action is completed by repeating the command.
+
+Python decides the hold and the intent; the Rust store writes both through `state.write` (create,
+then replace under the row revision; no delete), in the store unit of the command, as it writes
+every lifecycle record. The `harness console` catalog offers `recovery status` and `recovery
+reload` without a confirmation and `recovery resume` as a terminal coordinator action.
+
 ## Developer-retry handoff
 
 A developer retry starts a new worker session from a compact handoff; it never resumes the previous
@@ -844,8 +906,9 @@ The coordinator sets `needs_attention` (with `attention_reason`, `attention_sinc
 `attention_policy.retry_queue_seconds`; operational retries of one candidate exceed
 `max_infrastructure_retries`; a third consecutive `tooling-retry` on one candidate is decided
 (`tooling-retry-repeated`); a retry's reason is `unknown`; a dispatch's pinned Context Package no
-longer matches the batch base or accepted candidate; or a live dispatch is silent past
-`stale_dispatch_seconds`. It is evaluated by `batch attention check`, by `batch decide --decision
+longer matches the batch base or accepted candidate; a live dispatch is silent past
+`stale_dispatch_seconds`; or the runtime store holds the batch (`operational-hold`, see Operator
+recovery). It is evaluated by `batch attention check`, by `batch decide --decision
 retry` and by `dispatch wait`. While it is set no next dispatch is created; nothing is deleted and
 the candidate is not touched. `batch attention resolve` (approval and note required) acknowledges the
 open findings, so the same occurrence is not raised again.

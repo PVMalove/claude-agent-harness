@@ -20,6 +20,7 @@ from harness.orchestration import (
     hook_policy,
     infrastructure_retry,
     operational_guards,
+    operational_hold,
     runtime_access,
     verification_plan,
 )
@@ -959,6 +960,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
+        operational_hold.require_no_hold(root, args.batch)
         _validate_batch_integrity(root, batch)
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(

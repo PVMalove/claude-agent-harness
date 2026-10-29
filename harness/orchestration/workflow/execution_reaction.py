@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import operational_hold
 from harness.orchestration.core import utils
 from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
@@ -139,6 +140,9 @@ def react(repo: Path, root: Path, dispatch: JsonObject, execution: JsonObject) -
         if status.get("state") not in LIVE_DISPATCH_STATES:
             return
         batch = _load_batch(root, dispatch["batch_id"])
+        # A held batch takes no reaction until recovery resume releases the hold (ADR 0026): the
+        # report stays pending, and dispatch status shows the refusal as reaction_error.
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         pending = status.pop("pending_report", None)
         if execution.get("state") == "exited" and isinstance(pending, dict):
             _replace_record(ledger, DispatchStatusRecord.from_dict(status))

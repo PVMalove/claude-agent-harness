@@ -339,6 +339,34 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 - `dispatch runtime-probe --dispatch <id> --runtime-command <runtime> [--runtime-arg <аргумент>]`
   запускает read-only READY probe app-server на brief dispatch без worker и без записи в ledger.
 
+Если строгое чтение отвергает запись batch, `recovery resume` удерживает batch записью
+`recovery/hold/<batch_id>.json` в runtime store (`operationalHold.v1`, причины `unknown-value`,
+`missing-value`, `unreadable-record`); терминальный batch не удерживается. Пока удержание действует,
+`dispatch propose`/`create`, `send`, `self-report`, `checkpoint`, `report submit`, `qa run`,
+`dispatch publish`, `batch decide`, `batch resume`, `resume-stop` и `rewind` отказывают кодом 2 и
+ничего не пишут, а реакция на завершённого supervised worker-а ждёт (`reaction_error` в
+`dispatch status`). `batch auto-decide` записывает остановку `operational-hold` и никогда не делает
+abandon. `dispatch heartbeat`, `dispatch cancel`, `batch abandon`, `batch attention check` и
+`resolve`, `batch decision-packet` (пустые `options` и `recovery_route`) и чтения доступны.
+
+- `recovery status --batch <id> [--json] [--skip <diagnostic-id>]` печатает документ
+  `recoveryStatus.v1` с 13 проверками и диагностикой и ничего не пишет.
+- `recovery reload --batch <id>` перечитывает конфигурацию и hello runtime без запуска worker.
+- `recovery resume --batch <id> [--approved-by <оператор> --approved-at <UTC> --note <причина>]`
+  повторяет проверки, снимает удержание и реагирует на наблюдаемое исполнение открытых supervised
+  dispatch; записанная остановка продолжается только через аудируемый `batch resume-stop`.
+  Attention recovery не разрешает: сначала `batch attention resolve`, затем `recovery resume`.
+- `recovery fix --batch <id> [--apply]` показывает или применяет безопасную нормализацию
+  конфигурации, а `recovery abort --batch <id>` записывает выход из recovery без abandon.
+
+Команды работают только на установленном runtime в эпохе `runtime-store`, не читают stdin и не
+требуют TTY: код 0 — документ с `outcome: done`, код 2 — документ с `outcome: refused` или, если
+команда не может выполниться, пустой stdout и `ERROR:`/`REMEDY:` в stderr. В консоли
+`recovery status` и `recovery reload` выполняются без подтверждения, а `recovery resume`
+запрашивает подтверждение терминального действия. Удержание и durable intent решает Python, а
+пишет Rust store (`state.write`, протокол 1.5, feature `state.recovery`). Подробности:
+[Operator recovery](playbook.md#operator-recovery).
+
 Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
 новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет
 известный чистый startup SHA отдельным evidence без фиктивного checkpoint. После recovery даже
