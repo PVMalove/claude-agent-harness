@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shutil
 import tempfile
 import tomllib
@@ -57,9 +58,34 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
         self.assertNotRegex(workflow, r"(?<!uv )\bpip install|-m pip\b")
         self.assertNotIn("run: python scripts/verify.py", workflow)
-        self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 5)
-        self.assertEqual(workflow.count("run: make bootstrap"), 5)
+        self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 6)
+        self.assertEqual(workflow.count("run: make bootstrap"), 6)
         self.assertEqual(workflow.count("make verify"), 2)
+
+    def test_only_the_docker_smoke_job_selects_the_smoke_and_it_requires_the_engine(
+        self,
+    ) -> None:
+        workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        blocks = {
+            block.strip().split(":", 1)[0]: block
+            for block in re.split(r"\n(?=  [a-z][a-z0-9-]*:\n)", jobs)
+        }
+        smoke = blocks["docker-smoke"]
+
+        # pyproject.toml deselects the marker everywhere else; this job alone selects it.
+        self.assertEqual(workflow.count("-m docker_smoke"), 1)
+        self.assertIn("-m docker_smoke", smoke)
+        self.assertIn("tests/orchestration/test_docker_smoke.py", smoke)
+        self.assertIn('HARNESS_REQUIRE_DOCKER_SMOKE: "1"', smoke)
+        self.assertIn('HARNESS_REQUIRE_RUNTIME: "1"', smoke)
+        self.assertIn("cargo build --locked", smoke)
+        for dockerfile in ("Dockerfile.sandbox", "Dockerfile.proxy"):
+            self.assertIn(f"-f harness/container/{dockerfile}", smoke)
+        for tag in ("harness-worker:smoke", "harness-proxy:smoke"):
+            self.assertIn(f"-t {tag}", smoke)
+        self.assertIn("name: junit-docker-smoke", smoke)
+        self.assertIn("docker-smoke", blocks["dashboard"].split("runs-on:", 1)[0])
 
 
 class ContractErrorInvariantTests(unittest.TestCase):

@@ -417,12 +417,64 @@ jobs:
           HARNESS_REQUIRE_RUNTIME: "1"
         run: .harness/.venv/Scripts/python -m pytest -q tests/orchestration/test_runtime_client.py
 
+  docker-smoke:
+    # Real rootful Docker smoke of the container executor (#710): the coordinator CLI, the real
+    # harness-runtime, real Git worktrees and the store run a worker dispatch and a QA run in
+    # containers of the images built below. pyproject.toml deselects the docker_smoke marker in
+    # every other pytest run; this job selects it explicitly, and its require flags turn a missing
+    # engine, image or runtime into a failure instead of a skip. Podman and rootless Docker are
+    # not covered by this job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-local-path: ${{ runner.temp }}/setup-uv-cache
+      - name: Keep the uv cache where setup-uv restores it
+        shell: bash
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
+      - name: Bootstrap harness environment
+        run: make bootstrap
+      - name: Build harness-runtime for the smoke
+        working-directory: native/harness-runtime
+        run: cargo build --locked
+      # The harness never builds an image; these commands are the ones the shipped guide gives the
+      # user: the base image, a project worker image FROM it, and the egress proxy.
+      - name: Build the smoke images
+        run: |
+          docker build -f harness/container/Dockerfile.sandbox -t harness-sandbox:smoke harness/container
+          printf 'FROM harness-sandbox:smoke\nLABEL org.opencontainers.image.title=harness-smoke-worker\n' \
+            | docker build -t harness-worker:smoke -
+          docker build -f harness/container/Dockerfile.proxy -t harness-proxy:smoke harness/container
+      - name: Docker smoke of the worker and QA paths
+        env:
+          HARNESS_RUNTIME_BIN: ${{ github.workspace }}/native/harness-runtime/target/debug/harness-runtime
+          HARNESS_REQUIRE_RUNTIME: "1"
+          HARNESS_REQUIRE_DOCKER_SMOKE: "1"
+        run: |
+          mkdir -p .harness/.sandboxes/logs
+          .harness/.venv/bin/python -m pytest -m docker_smoke -v \
+            --junitxml=.harness/.sandboxes/logs/junit-docker-smoke.xml -o junit_family=xunit2 \
+            tests/orchestration/test_docker_smoke.py
+      - name: Keep the test report for the dashboard
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-docker-smoke
+          path: .harness/.sandboxes/logs/junit-docker-smoke.xml
+          if-no-files-found: ignore
+          retention-days: 3
+
   dashboard:
     # One page for the whole run: which jobs passed, which failed, which tests and why. It runs
     # after every other job, whatever their results, and only reads what they leave.
     if: always()
     needs:
-      [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle, rust, runtime-ipc-windows]
+      [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle, rust, runtime-ipc-windows, docker-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
