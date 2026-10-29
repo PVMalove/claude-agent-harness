@@ -383,7 +383,8 @@ impl Supervisor {
 
     /// The rest of a stop after the first step of `plan`: the kill after its grace when a member
     /// is still there, the wait until the leader is gone and the group is empty, then `exited`
-    /// with the exit evidence and the lease released, in one transition.
+    /// with the exit evidence and the lease released, in one transition. Only that record lets
+    /// the platform layer close what it held of the leader.
     fn conclude(&self, id: &str, group: &Group, mut leader: Leader<'_>, plan: &StopPlan) {
         let mut kill_sent_at: Option<String> = None;
         let mut kill_at = 0;
@@ -447,12 +448,14 @@ impl Supervisor {
             facts: json!({"source": source, "stopped_by": "deadline"}),
             ..Change::default()
         };
-        self.record(
+        if self.record(
             id,
             ExecutionState::Stopping,
             ExecutionState::Exited,
             &change,
-        );
+        ) {
+            os::release_leader(self, id);
+        }
     }
 
     /// A stop that cannot prove its outcome: `unknown` from `from`, and the lease stays held.

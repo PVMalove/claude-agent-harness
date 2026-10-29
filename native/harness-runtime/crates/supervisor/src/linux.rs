@@ -115,6 +115,10 @@ pub(crate) fn observe(
     }
 }
 
+/// After a stop recorded the row of `id` `exited`: nothing to close here, because this runtime
+/// holds no handle to a leader it adopted.
+pub(crate) fn release_leader(_supervisor: &Supervisor, _id: &str) {}
+
 /// The exit a stop or a watcher proves: the wait status of a child of this runtime.
 pub(crate) struct Exit(ExitStatus);
 

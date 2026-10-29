@@ -286,6 +286,12 @@ fn look_at(
     }
 }
 
+/// Close the handles this runtime held to the leader of the execution `id`: a stop recorded its
+/// row `exited`.
+pub(crate) fn release_leader(supervisor: &Supervisor, id: &str) {
+    guard(&supervisor.inner.held).remove(id);
+}
+
 /// The exit a stop or a watcher proves: the exit code of a leader this runtime held, as an
 /// unsigned `DWORD`. Windows has no signal.
 pub(crate) struct Exit {
@@ -311,8 +317,9 @@ impl Exit {
 pub(crate) enum Leader<'a> {
     /// A child of this runtime: its handle.
     Child(&'a mut Launched),
-    /// A leader another runtime started that this runtime held since it ran.
-    Held(Launched),
+    /// A leader another runtime started that this runtime held since it ran: a copy of the
+    /// held handle.
+    Held(Process),
     /// A leader this runtime does not hold: its recorded pid and creation time.
     Adopted(Identity),
 }
@@ -327,19 +334,22 @@ fn exit_of(process: &Process, source: &'static str) -> Seen {
 }
 
 impl Leader<'_> {
-    /// The leader of an execution another runtime started: the one this runtime holds, which it
-    /// gives to the stop, or else the recorded identity.
+    /// The leader of an execution another runtime started: a copy of the handle this runtime
+    /// holds, or else the recorded identity. The held handle stays until the row ends
+    /// (`release_leader`), so a stop that does not begin, or that ends `unknown`, leaves the exit
+    /// code to the next observation.
     pub(crate) fn adopted(supervisor: &Supervisor, execution: &Execution) -> Option<Self> {
-        if let Some(held) = guard(&supervisor.inner.held).remove(&execution.id) {
-            return Some(Leader::Held(held));
-        }
-        execution.identity.clone().map(Leader::Adopted)
+        let held = guard(&supervisor.inner.held)
+            .get(&execution.id)
+            .and_then(|held| held.process.try_clone().ok());
+        held.map(Leader::Held)
+            .or_else(|| execution.identity.clone().map(Leader::Adopted))
     }
 
     pub(crate) fn look(&mut self) -> Seen {
         match self {
             Self::Child(launched) => exit_of(&launched.process, "wait-status"),
-            Self::Held(launched) => exit_of(&launched.process, "process-handle"),
+            Self::Held(process) => exit_of(process, "process-handle"),
             Self::Adopted(recorded) => {
                 let Ok(pid) = u32::try_from(recorded.pid) else {
                     return Seen::Gone(None);
@@ -577,5 +587,104 @@ pub fn ctrl_break(job: &str, group: u32, pid: u32, created: &str) -> CtrlBreak {
     match send_ctrl_break(&member, group) {
         Ok(()) => CtrlBreak::Delivered,
         Err(err) => CtrlBreak::Failed(format!("CTRL_BREAK was not delivered: {err}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use contracts::ExecutionState;
+    use state::executions::KIND_PROCESS;
+
+    use super::*;
+
+    /// Wait up to 30 seconds until `done`.
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < until, "{what}");
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn a_held_leader_that_ends_before_its_deadline_stop_begins_is_exited_with_its_exit_code() {
+        let id = format!("held-leader-{}", std::process::id());
+        let dir = std::env::temp_dir().join(format!("hr-win-unit-{id}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("exit");
+        let (stdout, stderr) = (dir.join("stdout.log"), dir.join("stderr.log"));
+        let argv = [
+            "python".to_owned(),
+            "-c".to_owned(),
+            format!(
+                "import os, sys, time\nwhile not os.path.exists(r'{}'): time.sleep(0.05)\nsys.exit(5)",
+                marker.display()
+            ),
+        ];
+        let mut execution = Execution {
+            id: id.clone(),
+            dispatch_id: "dispatch-held-leader".to_owned(),
+            attempt: 1,
+            state: ExecutionState::Running,
+            revision: 1,
+            kind: KIND_PROCESS.to_owned(),
+            engine: None,
+            container_id: None,
+            launch: Value::Object(launch_facts(&id)),
+            execution_deadline: "2000-01-01T00:00:00Z".to_owned(),
+            stop_grace_seconds: 5,
+            poll_interval_seconds: 1,
+            identity: None,
+            pgid: None,
+            receipt: None,
+            exit: None,
+            observation: None,
+            lease_owner: Value::Null,
+            lease_released_at: None,
+            created_at: iso_now(),
+            updated_at: iso_now(),
+        };
+        let spec = Spec {
+            argv: &argv,
+            cwd: &dir,
+            operation_id: &id,
+            dispatch_id: &execution.dispatch_id,
+            stdout: &stdout,
+            stderr: &stderr,
+        };
+        let launched = spawn(&spec, &execution).unwrap();
+        let (recorded, pgid) = identity_of(pid(&launched), &identity::observer()).unwrap();
+        execution.identity = Some(recorded.clone());
+        execution.pgid = Some(pgid);
+        // The runtime that launched it is gone: no handle of this test keeps the leader.
+        drop(launched);
+        let supervisor = Arc::new(Supervisor::new(None));
+        // Reconcile of a new runtime sees the live leader in its job and holds it.
+        assert_eq!(
+            observe(&supervisor, &execution, &recorded).to,
+            ExecutionState::Running
+        );
+        // The leader ends after that observation and before the stop of its deadline begins.
+        fs::write(&marker, "").unwrap();
+        wait_until("the held leader did not end", || {
+            guard(&supervisor.inner.held)
+                .get(&id)
+                .is_some_and(|held| matches!(held.process.exit_code(), Ok(Some(_))))
+        });
+
+        supervisor.stop_adopted(&execution);
+        wait_until("the stop did not end", || !supervisor.is_watched(&id));
+
+        let observed = observe(&supervisor, &execution, &recorded);
+        assert_eq!(observed.to, ExecutionState::Exited, "{}", observed.facts);
+        let exit = observed.exit.unwrap();
+        assert_eq!(exit["exit_code"], 5, "{exit}");
+        assert_eq!(exit["source"], "process-handle", "{exit}");
+        assert!(!guard(&supervisor.inner.held).contains_key(&id));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
