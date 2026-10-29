@@ -195,7 +195,8 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("backend-orchestration schema missing")
     # Issue #706: the egress proxy and its Dockerfile are a byte-identical, drift-checked payload
     # of backend-orchestration only; a engineering-suite project never receives the container directory.
-    for proxy_file in ("egress_proxy.py", "Dockerfile.proxy"):
+    # Issue #710 adds the optional worker base image Dockerfile.sandbox to the same payload.
+    for proxy_file in ("egress_proxy.py", "Dockerfile.proxy", "Dockerfile.sandbox"):
         installed_proxy = orchestration_project / ".harness" / "container" / proxy_file
         if not installed_proxy.is_file():
             sys.exit(f"backend-orchestration payload is missing container/{proxy_file}")
@@ -206,6 +207,18 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"installed container/{proxy_file} differs from its source")
     if (pv_project / ".harness" / "container").exists():
         sys.exit("engineering-suite unexpectedly installed container resources")
+    # Issue #710: the container executor guide ships with backend-orchestration only, from
+    # harness/docs/ and never from the source repository's root docs/.
+    installed_guide = orchestration_project / ".harness/docs/container-executor.md"
+    if not installed_guide.is_file():
+        sys.exit("backend-orchestration payload is missing docs/container-executor.md")
+    if (
+        installed_guide.read_bytes()
+        != (ROOT / "harness" / "docs" / "container-executor.md").read_bytes()
+    ):
+        sys.exit("installed docs/container-executor.md differs from its source")
+    if (pv_project / ".harness/docs/container-executor.md").exists():
+        sys.exit("engineering-suite unexpectedly installed the container guide")
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")

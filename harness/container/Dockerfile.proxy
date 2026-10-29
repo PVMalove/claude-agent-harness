@@ -4,6 +4,7 @@
 # payload, then name the tag in access_policy container.proxy_image and repeat dispatch propose:
 #
 #   docker build -f .harness/container/Dockerfile.proxy -t harness-proxy:local .harness/container
+#   podman build -f .harness/container/Dockerfile.proxy -t harness-proxy:local .harness/container
 #
 # The executor starts the image from its pinned digest as the host user, read-only, without
 # capabilities, and passes the plan hosts in HARNESS_EGRESS_ALLOWED_HOSTS.

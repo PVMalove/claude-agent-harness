@@ -1,0 +1,23 @@
+# Optional worker base image of the docker executor (issue #710).
+#
+# The harness never builds, pulls or publishes this image. Build it yourself from the installed
+# payload, then name the tag in access_policy container.worker_image and repeat dispatch propose:
+#
+#   docker build -f .harness/container/Dockerfile.sandbox -t harness-sandbox:local .harness/container
+#   podman build -f .harness/container/Dockerfile.sandbox -t harness-sandbox:local .harness/container
+#
+# A project usually adds its own toolchain on top of it and names that tag instead:
+#
+#   FROM harness-sandbox:local
+#   RUN apt-get update && apt-get install -y --no-install-recommends <your tools> \
+#       && rm -rf /var/lib/apt/lists/*
+#
+# The executor sets the entrypoint, the user (the host uid:gid), HOME (a tmpfs at /harness-home),
+# the workdir and the environment itself. This image therefore declares no ENTRYPOINT, CMD, USER,
+# VOLUME or ENV, and it must never contain a secret.
+FROM debian:trixie-20261020-slim
+COPY --from=ghcr.io/astral-sh/uv:0.12.21 /uv /uvx /usr/local/bin/
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl git jq nodejs npm python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*

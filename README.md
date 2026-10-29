@@ -191,7 +191,18 @@ snapshot, `harness update` обновляет его и сохраняет ло�
 `.harness/docs/technical-english.md`, а при `engineering-suite` и `backend-orchestration` ещё и шаблоны
 проектных руководств из `harness/project/docs-agents/`, которые разворачиваются как
 `docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`. `harness update`
-обновляет эти файлы. Для существующего проекта следуйте
+обновляет эти файлы.
+
+`backend-orchestration` дополнительно ставит необязательный контейнерный исполнитель
+`extensions.runtime_access: "docker"`: payload `.harness/container/` (базовый образ worker-а
+`Dockerfile.sandbox`, образ egress-proxy `Dockerfile.proxy` и код прокси) и англоязычное
+руководство [`.harness/docs/container-executor.md`](./harness/docs/container-executor.md).
+Руководство описывает предпосылки для Docker и Podman, конфиг и overrides, команды `docker build`
+и `podman build` для образов worker-а и proxy, кэши, передачу переменных окружения по имени,
+allowlist хостов, блокеры, очистку и пример проектного адаптера агента с маркером
+`HARNESS_EXECUTOR`, который сохраняет native approval. Харнесс образы не собирает, не скачивает и
+не публикует. Настоящий smoke в CI проверяет только rootful Docker, поэтому Podman и rootless Docker
+остаются непроверенными на живом движке. Для существующего проекта следуйте
 [инструкции обновления и включения памяти](./docs/harness-guide.md#обновление-существующего-проекта-и-включение-памяти):
 обновление сохраняет `project.json`, поэтому schema и opt-in поля памяти нужно перенести отдельно.
 

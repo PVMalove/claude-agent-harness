@@ -378,11 +378,26 @@ _Avoid_: сырые логи в Git, report с секретами, удален�
 _Avoid_: обязательная зависимость от конкретного provider, config-only ядро с командами provider.
 
 **Контейнерный исполнитель**:
-Встроенная реализация доступа worker-а, которая запускает один утверждённый external dispatch в
-отдельном контейнере: монтирует только ресурсы плана доступа, пропускает в сеть только хосты плана и
-передаёт только названные в плане переменные окружения. Не меняет флаги агента, не подтверждает
-действия за человека и не исполняет in-process роли.
+Встроенная реализация доступа `docker`, через которую `harness-runtime` запускает один утверждённый
+external dispatch, а при заданном `operations.qa.container` и каждую команду QA, в отдельном
+контейнере Docker или Podman: монтирует только ресурсы плана доступа, пропускает в сеть только хосты
+плана через egress-proxy и передаёт только названные в плане переменные окружения. Образы собирает
+пользователь, а исполнитель запускает только id, закреплённые при `dispatch propose`. Не меняет
+флаги агента, не подтверждает действия за человека и не исполняет in-process роли. Настоящим smoke
+проверен только rootful Docker.
 _Avoid_: Docker sandbox, песочница (занято `.harness/.sandboxes/`), постоянный dev-контейнер.
+
+**Базовый образ worker-а** (`Dockerfile.sandbox`):
+Необязательный Dockerfile из payload `.harness/container/`: Debian slim с `git`, `curl`, `jq`,
+Python с `uv` и Node.js, без `ENTRYPOINT`, `USER`, `VOLUME` и секретов. Проект собирает его сам и
+строит на нём свой образ worker-а; исполнитель принимает и любой другой совместимый образ.
+_Avoid_: обязательный образ харнесса, образ, который харнесс скачивает.
+
+**Docker smoke**:
+Тесты с маркером `docker_smoke` на настоящем rootful Docker: публичные команды coordinator,
+настоящий `harness-runtime`, Git worktree и store проверяют worker-а и контейнерный QA. Прогоны
+pytest по умолчанию их отбрасывают; запускает их только CI job `docker-smoke` с `-m docker_smoke`.
+_Avoid_: smoke в `make verify`, проверка Podman или rootless Docker.
 
 **Role common contract** (`harness/orchestration/roles/_common.md`):
 Общий Markdown-контракт для всех ролей: handoff, completion report, branch/worktree, commit proof и
