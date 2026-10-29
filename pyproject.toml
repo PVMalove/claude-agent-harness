@@ -38,6 +38,12 @@ exclude = ["^harness/repo_map/tree_sitter_worker\\.py$"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The real container smoke (#710) needs a Docker engine and network: every default run deselects
+# it, and only the CI docker-smoke job selects it with an explicit `-m docker_smoke`.
+addopts = ["-m", "not docker_smoke"]
+markers = [
+    "docker_smoke: real Docker smoke of the container executor; run only with -m docker_smoke",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Facade: `import x as x` marks explicit re-exports under mypy strict (no implicit reexport).
