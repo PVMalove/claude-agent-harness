@@ -42,9 +42,11 @@ use crate::schema;
 use crate::time::iso_now;
 
 /// The record directories a generation holds outside the typed tables and the audit chain.
-const FREE_COLLECTIONS: [&str; 3] = ["reports", "qa-lane", "qa-artifacts"];
+/// `unaccepted-evidence` keeps a submission the coordinator refused (a report or a checkpoint of
+/// a held batch) without a report, a checkpoint or a decision.
+const FREE_COLLECTIONS: [&str; 4] = ["reports", "qa-lane", "qa-artifacts", "unaccepted-evidence"];
 /// The collections whose records are evidence: written once, never replaced or deleted.
-const EVIDENCE_COLLECTIONS: [&str; 2] = ["reports", "qa-artifacts"];
+const EVIDENCE_COLLECTIONS: [&str; 3] = ["reports", "qa-artifacts", "unaccepted-evidence"];
 /// The recovery records of a batch (ADR 0026): `recovery/hold/<batch_id>.json`, its operational
 /// hold, and `recovery/intent/<batch_id>.json`, its recovery intent. The coordinator decides them;
 /// the store creates and replaces them under the revision of the row and never deletes one.

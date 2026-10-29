@@ -30,6 +30,7 @@ from tests.orchestration.runtime_store_support import (
     headless,
     hold_record,
     planned_batch,
+    store_call,
     store_records,
     write_hold,
 )
@@ -232,9 +233,13 @@ def _ok(result: subprocess.CompletedProcess[str]) -> Document:
 
 
 def _refused_on_hold(
-    recovery: Recovery, *command: str, reason: str = "unknown-value"
+    recovery: Recovery,
+    *command: str,
+    reason: str = "unknown-value",
+    evidence: bool = False,
 ) -> None:
-    """The command exits 2 with the hold and its recovery route, and the store keeps every row."""
+    """The command exits 2 with the hold and its recovery route, and the store keeps every row;
+    a refused report or checkpoint (``evidence``) adds one row, its unaccepted evidence."""
     before = recovery.audit_records()
 
     result = recovery.cli(*command)
@@ -242,7 +247,20 @@ def _refused_on_hold(
     assert result.returncode == 2, (result.stdout, result.stderr)
     assert f"batch {recovery.batch} is held ({reason})" in result.stderr, result.stderr
     assert f"recovery resume --batch {recovery.batch}" in result.stderr
-    assert recovery.audit_records() == before
+    assert recovery.audit_records() == before + (1 if evidence else 0)
+
+
+def _rows(recovery: Recovery, *collections: str) -> dict[str, Document]:
+    """The records of whole ``collections`` of the store."""
+    answer = store_call(
+        recovery.repo,
+        recovery.runtime,
+        "state.read",
+        {"collections": list(collections)},
+    )
+    records = answer["records"]
+    assert isinstance(records, dict)
+    return {path: record for path, record in records.items() if isinstance(record, dict)}
 
 
 def _released(recovery: Recovery, *approval: str) -> Document:
@@ -341,11 +359,13 @@ def _rewind(r: Recovery) -> list[str]:
 class Gate:
     """A command a held batch refuses: whether its batch has a report, the command (after the
     state it needs is prepared), and whether it succeeds once the hold is released; otherwise
-    it refuses for its own reason, past the hold."""
+    it refuses for its own reason, past the hold. ``evidence``: the refusal keeps the submitted
+    file as unaccepted evidence."""
 
     report: bool
     command: Callable[[Recovery], list[str]]
     passes: bool
+    evidence: bool = False
 
 
 GATES = {
@@ -353,8 +373,8 @@ GATES = {
         False, lambda r: ["dispatch", "send", "--dispatch", r.dispatch], True
     ),
     "dispatch self-report": Gate(False, lambda r: _self_report(r, _sent(r)), True),
-    "report submit": Gate(False, _submit, True),
-    "dispatch checkpoint": Gate(False, _checkpointed, False),
+    "report submit": Gate(False, _submit, True, evidence=True),
+    "dispatch checkpoint": Gate(False, _checkpointed, False, evidence=True),
     "qa run": Gate(False, lambda r: ["qa", "run", "--dispatch", r.dispatch], False),
     "dispatch publish": Gate(
         False,
@@ -411,13 +431,45 @@ def test_a_held_batch_refuses_the_command_until_recovery_resume_releases_it(
     command = gate.command(recovery)
     recovery.hold()
 
-    _refused_on_hold(recovery, *command)
+    _refused_on_hold(recovery, *command, evidence=gate.evidence)
 
     _released(recovery)
     after = recovery.cli(*command)
     assert "is held" not in after.stderr, after.stderr
     if gate.passes:
         assert after.returncode == 0, after.stderr
+
+
+@seam
+@pytest.mark.parametrize("name", ["report submit", "dispatch checkpoint"])
+def test_a_submission_the_hold_refuses_is_kept_as_unaccepted_evidence(
+    made: Make, name: str
+) -> None:
+    """The refused report or checkpoint is stored as unaccepted evidence before the refusal; no
+    report, checkpoint or decision is recorded."""
+    recovery = made()
+    command = GATES[name].command(recovery)
+    submitted = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+    recovery.hold()
+    kept = (recovery.batch_path, f"dispatch-status/{recovery.dispatch}.json")
+    revisions = recovery.revisions(*kept)
+    recorded = _rows(recovery, "reports", "checkpoints")
+
+    result = recovery.cli(*command)
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert f"batch {recovery.batch} is held (unknown-value)" in result.stderr
+    assert f"recovery resume --batch {recovery.batch}" in result.stderr
+    [(path, evidence)] = _rows(recovery, "unaccepted-evidence").items()
+    assert "unaccepted evidence: " in result.stderr and path in result.stderr
+    assert evidence["dispatch_id"] == recovery.dispatch
+    assert evidence["accepted"] is False
+    assert evidence["input"] == submitted
+    assert str(evidence["diagnostic"]).startswith(
+        f"batch {recovery.batch} is held (unknown-value)"
+    )
+    assert recovery.revisions(*kept) == revisions
+    assert _rows(recovery, "reports", "checkpoints") == recorded
 
 
 @seam

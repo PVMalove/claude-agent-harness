@@ -817,6 +817,49 @@ fn an_artifact_written_twice_with_the_same_bytes_is_the_same_evidence() {
 }
 
 #[test]
+fn unaccepted_evidence_is_written_once_and_never_replaced_or_deleted() {
+    let repo = cut_over("unaccepted-evidence");
+    let path = format!("unaccepted-evidence/{DISPATCH}-0001.json");
+    let content = canonical(&json!({
+        "dispatch_id": DISPATCH,
+        "accepted": false,
+        "input": {"dispatch_id": DISPATCH},
+        "diagnostic": "the batch is held",
+        "remedy": "run recovery resume",
+    }));
+    let evidence = |id: &str| {
+        write(
+            &repo.state(),
+            &request(
+                id,
+                None,
+                None,
+                json!([{"op": "create_artifact", "path": path, "content": content}]),
+            ),
+        )
+    };
+
+    evidence("op-1").unwrap();
+    evidence("op-2").unwrap();
+
+    let (record, revision) = stored(&repo, &path).unwrap();
+    assert_eq!(record["accepted"], json!(false));
+    for (id, mutation) in [
+        (
+            "op-replace",
+            json!({"op": "replace", "path": path, "content": content, "expected_revision": revision}),
+        ),
+        (
+            "op-delete",
+            json!({"op": "delete", "path": path, "reason": "x", "expected_revision": revision}),
+        ),
+    ] {
+        let error = write(&repo.state(), &request(id, None, None, json!([mutation]))).unwrap_err();
+        assert_eq!(code(&error), ErrorCode::InvariantViolation, "{mutation}");
+    }
+}
+
+#[test]
 fn a_json_artifact_outside_the_canonical_form_is_kept_as_its_bytes() {
     let repo = cut_over("artifact-bytes");
     let path = "qa-artifacts/evidence.stage-evidence.json";
