@@ -207,6 +207,18 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"installed container/{proxy_file} differs from its source")
     if (pv_project / ".harness" / "container").exists():
         sys.exit("engineering-suite unexpectedly installed container resources")
+    # Issue #710: the container executor guide ships with backend-orchestration only, from
+    # harness/docs/ and never from the source repository's root docs/.
+    installed_guide = orchestration_project / ".harness/docs/container-executor.md"
+    if not installed_guide.is_file():
+        sys.exit("backend-orchestration payload is missing docs/container-executor.md")
+    if (
+        installed_guide.read_bytes()
+        != (ROOT / "harness" / "docs" / "container-executor.md").read_bytes()
+    ):
+        sys.exit("installed docs/container-executor.md differs from its source")
+    if (pv_project / ".harness/docs/container-executor.md").exists():
+        sys.exit("engineering-suite unexpectedly installed the container guide")
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")

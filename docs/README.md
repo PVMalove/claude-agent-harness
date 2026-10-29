@@ -5,7 +5,9 @@
 доставляются только их собственные контракты: проектные руководства из `harness/project/docs-agents/`,
 контракты `harness/docs/project-memory.md` и `harness/docs/technical-english.md`, роли и playbook
 оркестрации, скиллы и hooks. Даже когда текст проектного руководства совпадает с документом здесь,
-корневой файл не становится источником установки.
+корневой файл не становится источником установки. Руководство по контейнерному исполнителю
+`harness/docs/container-executor.md` тоже поставляется из `harness/docs/`: его ставит только
+`backend-orchestration` как `.harness/docs/container-executor.md`.
 
 | Раздел | Содержимое |
 | --- | --- |
@@ -17,6 +19,7 @@
 | [Настройка в консоли](./console-configuration.md) | Выбор целевого проекта, мастер JSON, версии, откат и необязательные CLI-подсказки. |
 | [Backend-оркестрация](./backend-orchestration.md) | Конфиг, coordinator, роли и lifecycle batch. |
 | [Technical English](../harness/docs/technical-english.md) | Общий контракт английской координации агентов, доставляемый в каждую установку. |
+| [Контейнерный исполнитель](../harness/docs/container-executor.md) | Поставляемое руководство `backend-orchestration`: образы, конфиг, allowlist, блокеры, очистка и пример адаптера. |
 | [Technical Russian](./technical-russian.md) | Правила технического русского языка и формат Keep a Changelog. |
 | [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards, pr-composer и test-author. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
