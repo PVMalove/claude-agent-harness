@@ -8,6 +8,7 @@ injected address policy lets the tests reach them, while the default policy is c
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 import threading
 import unittest
@@ -412,7 +413,7 @@ class PayloadDeliveryTests(unittest.TestCase):
         payload = harness_cli.package_files(["backend-orchestration"])
         container = harness_cli.PACKAGE / "container"
 
-        for name in ("egress_proxy.py", "Dockerfile.proxy"):
+        for name in ("egress_proxy.py", "Dockerfile.proxy", "Dockerfile.sandbox"):
             with self.subTest(name=name):
                 self.assertEqual(
                     payload[f".harness/container/{name}"],
@@ -421,6 +422,33 @@ class PayloadDeliveryTests(unittest.TestCase):
         self.assertTrue(
             all(path.startswith(".harness/") for path in payload), "outside .harness/"
         )
+
+    def test_the_sandbox_base_image_is_a_plain_pinned_from_base(self) -> None:
+        """Dockerfile.sandbox only installs tools: the executor owns entrypoint, user and home (#710)."""
+        dockerfile = (
+            harness_cli.PACKAGE / "container" / "Dockerfile.sandbox"
+        ).read_text(encoding="utf-8")
+        instructions = [
+            line.split(maxsplit=1)
+            for line in dockerfile.splitlines()
+            if line.strip() and not line.startswith(("#", " ", "\t"))
+        ]
+        keywords = [parts[0].upper() for parts in instructions]
+        base = next(parts[1] for parts in instructions if parts[0].upper() == "FROM")
+
+        self.assertRegex(base, r"^debian:[a-z]+-\d{8}-slim$")
+        self.assertFalse(
+            {"ENTRYPOINT", "CMD", "USER", "VOLUME", "ARG", "ENV"} & set(keywords)
+        )
+        self.assertRegex(dockerfile, r"ghcr\.io/astral-sh/uv:\d+\.\d+\.\d+ ")
+        for tool in ("git", "curl", "jq", "ca-certificates", "python3", "nodejs"):
+            with self.subTest(tool=tool):
+                self.assertRegex(dockerfile, rf"\s{re.escape(tool)}\s")
+        for build in ("docker build", "podman build"):
+            with self.subTest(build=build):
+                self.assertIn(
+                    f"#   {build} -f .harness/container/Dockerfile.sandbox", dockerfile
+                )
 
     def test_a_project_without_orchestration_does_not_receive_the_proxy(self) -> None:
         payload = harness_cli.package_files(["engineering-suite"])

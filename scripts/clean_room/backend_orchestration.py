@@ -195,7 +195,8 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("backend-orchestration schema missing")
     # Issue #706: the egress proxy and its Dockerfile are a byte-identical, drift-checked payload
     # of backend-orchestration only; a engineering-suite project never receives the container directory.
-    for proxy_file in ("egress_proxy.py", "Dockerfile.proxy"):
+    # Issue #710 adds the optional worker base image Dockerfile.sandbox to the same payload.
+    for proxy_file in ("egress_proxy.py", "Dockerfile.proxy", "Dockerfile.sandbox"):
         installed_proxy = orchestration_project / ".harness" / "container" / proxy_file
         if not installed_proxy.is_file():
             sys.exit(f"backend-orchestration payload is missing container/{proxy_file}")
