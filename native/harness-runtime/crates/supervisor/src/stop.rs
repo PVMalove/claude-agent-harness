@@ -23,30 +23,27 @@
 //! Debug-build hook (`HARNESS_RUNTIME_TEST_PAUSE_AT`, once per process):
 //! `execution.stop:signalled`, the SIGTERM of a deadline stop is sent and its record is not
 //! written yet.
+//!
+//! The signals, the group and the leader come from the platform layer (`crate::os`); this module
+//! holds the order of the steps and the records, which are the same on every platform.
 
-use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use contracts::{ErrorBody, ExecutionState};
-use nix::errno::Errno;
-use nix::sys::signal::{Signal, killpg};
-use nix::unistd::Pid;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use state::executions::{self, Change, Execution};
 use state::hooks;
-use state::identity::{self, Identity, Probe, Verdict};
 use state::time::{iso_from_micros, iso_now, now_micros, parse_rfc3339};
 
 use crate::Supervisor;
 use crate::launch::{guard, sql};
+use crate::os::{self, Group, Leader};
 
 /// How often a watcher or a stop looks at the process.
 const POLL: Duration = Duration::from_millis(50);
@@ -62,126 +59,27 @@ pub(crate) fn past(deadline: &str) -> bool {
     parse_rfc3339(deadline).is_some_and(|deadline| now_micros() >= deadline)
 }
 
-/// How the stop proves that the group leader is gone.
-enum Leader<'a> {
-    /// A child of this runtime: its wait status.
-    Child(&'a mut Child),
-    /// A process another runtime started: the verdict on its recorded identity.
-    Adopted(&'a Identity),
-}
-
-/// The SIGTERM of a stop: the time it was sent, as recorded and in microseconds, and the grace
-/// before SIGKILL.
+/// The first step of a stop: the time it was sent, as recorded and in microseconds, the grace
+/// before the kill, and the facts the platform records about it.
 struct StopPlan {
     term_sent_at: String,
     term_at: i64,
     grace_seconds: i64,
+    term: Map<String, Value>,
 }
 
-/// What the stop saw of the leader: gone (with the wait status of a child), alive, or nothing
+/// What the stop saw of the leader: gone (with the exit it proves, if any), alive, or nothing
 /// it can prove.
-enum Seen {
-    Gone(Option<ExitStatus>),
+pub(crate) enum Seen {
+    Gone(Option<os::Exit>),
     Alive,
     Unproven(String),
-}
-
-impl Leader<'_> {
-    fn look(&mut self) -> Seen {
-        match self {
-            Self::Child(child) => match child.try_wait() {
-                Ok(Some(status)) => Seen::Gone(Some(status)),
-                Ok(None) => Seen::Alive,
-                Err(err) => Seen::Unproven(format!("the wait status cannot be read: {err}")),
-            },
-            Self::Adopted(recorded) => {
-                let observer = identity::observer();
-                match identity::verdict(Some(recorded), &observer, &identity::probe(recorded.pid)) {
-                    Verdict::Dead | Verdict::PidReused => Seen::Gone(None),
-                    Verdict::Alive => Seen::Alive,
-                    other => Seen::Unproven(other.as_str().to_owned()),
-                }
-            }
-        }
-    }
-}
-
-/// The recorded process group of an execution, the only target of `killpg`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Group(Pid);
-
-/// A recorded group id the supervisor never signals: `killpg` of 0 reaches the group of the
-/// runtime itself, and of 1 or below every process the runtime may signal.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct RefusedGroup(i64);
-
-impl fmt::Display for RefusedGroup {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "the recorded process group {} is no group of an execution: it is never signalled",
-            self.0
-        )
-    }
-}
-
-impl Group {
-    /// The group of a recorded group id.
-    ///
-    /// # Errors
-    /// A group id at or below 1, or one beyond the pid range.
-    pub(crate) fn of(pgid: i64) -> Result<Self, RefusedGroup> {
-        i32::try_from(pgid)
-            .ok()
-            .filter(|raw| *raw > 1)
-            .map(|raw| Self(Pid::from_raw(raw)))
-            .ok_or(RefusedGroup(pgid))
-    }
-
-    /// Whether a process of the group is still there; `Err` when the kernel cannot tell.
-    fn alive(self) -> Result<bool, Errno> {
-        match killpg(self.0, None) {
-            Ok(()) | Err(Errno::EPERM) => Ok(true),
-            Err(Errno::ESRCH) => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Whether a member of the group outlives its gone leader. The kernel gives the number of a
-    /// group to another process only once the group is empty, and that process may lead a group
-    /// of the same number: a live process at the leader's pid proves the execution's group gone.
-    fn members_alive(self) -> Result<bool, Errno> {
-        if matches!(
-            identity::probe(i64::from(self.0.as_raw())),
-            Probe::Running(_)
-        ) {
-            return Ok(false);
-        }
-        self.alive()
-    }
-
-    /// Send `signal` to the group; a group that is gone already is no failure.
-    fn signal(self, signal: Signal) -> Result<(), String> {
-        match killpg(self.0, signal) {
-            Ok(()) | Err(Errno::ESRCH) => Ok(()),
-            Err(err) => Err(format!("{signal} to the process group failed: {err}")),
-        }
-    }
-}
-
-/// Whether a member of the recorded group `pgid` outlives its gone leader; `Err` with the reason
-/// when the group cannot be observed or is never signalled.
-pub(crate) fn outlived(pgid: i64) -> Result<bool, String> {
-    let group = Group::of(pgid).map_err(|refused| refused.to_string())?;
-    group
-        .members_alive()
-        .map_err(|err| format!("the process group cannot be observed: {err}"))
 }
 
 /// Whether the leader lives, or a member of its group outlives it: looked at right before a
 /// signal, because an adopted leader may have ended since reconcile saw it and the number of an
 /// empty group may be reused.
-fn still_there(leader: &mut Leader<'_>, group: Group) -> bool {
+fn still_there(leader: &mut Leader<'_>, group: &Group) -> bool {
     matches!(leader.look(), Seen::Alive) || matches!(group.members_alive(), Ok(true))
 }
 
@@ -300,46 +198,53 @@ impl Supervisor {
     }
 
     /// Wait for a child of this runtime on its own thread: its exit, or its deadline.
-    pub(crate) fn watch(self: &Arc<Self>, id: &str, child: Child, pgid: i64, deadline: &str) {
-        guard(&self.inner.watched).insert(id.to_owned());
+    pub(crate) fn watch(self: &Arc<Self>, execution: &Execution, child: os::Launched) {
+        guard(&self.inner.watched).insert(execution.id.clone());
         let supervisor = Arc::clone(self);
-        let (id, deadline) = (id.to_owned(), deadline.to_owned());
+        let execution = execution.clone();
         thread::spawn(move || {
-            supervisor.wait_for(&id, child, pgid, &deadline);
-            guard(&supervisor.inner.watched).remove(&id);
+            supervisor.wait_for(&execution, child);
+            guard(&supervisor.inner.watched).remove(&execution.id);
         });
     }
 
-    fn wait_for(&self, id: &str, mut child: Child, pgid: i64, deadline: &str) {
-        let outlived = || matches!(outlived(pgid), Ok(true));
+    fn wait_for(&self, execution: &Execution, mut child: os::Launched) {
+        let id = &execution.id;
+        let group = Group::of(self, execution);
+        let outlived = || {
+            group
+                .as_ref()
+                .is_ok_and(|group| matches!(group.members_alive(), Ok(true)))
+        };
         loop {
-            match child.try_wait() {
-                Ok(Some(status)) if !outlived() => {
+            let seen = Leader::Child(&mut child).look();
+            match seen {
+                Seen::Gone(Some(status)) if !outlived() => {
                     let exit = json!({
                         "exit_code": status.code(),
                         "signal": status.signal(),
-                        "source": "wait-status",
+                        "source": status.source(),
                         "stopped_by": null,
                         "ended_at": iso_now(),
                         "logs": logs(&self.log_paths(id)),
                     });
                     let change = Change {
                         exit: Some(exit),
-                        facts: json!({"source": "wait-status"}),
+                        facts: json!({"source": status.source()}),
                         ..Change::default()
                     };
                     self.record(id, ExecutionState::Running, ExecutionState::Exited, &change);
                     return;
                 }
+                // The exit is lost: reconcile observes the identity from now on.
+                Seen::Unproven(_) => return,
                 // The leader runs, or a member of its group outlives it: both end at the deadline.
-                Ok(_) if past(deadline) => {
-                    if self.stop(id, pgid, Leader::Child(&mut child)) {
+                _ if past(&execution.execution_deadline) => {
+                    if self.stop(execution, Leader::Child(&mut child)) {
                         return;
                     }
                 }
-                Ok(_) => thread::sleep(POLL),
-                // The wait status is lost: reconcile observes the identity from now on.
-                Err(_) => return,
+                _ => thread::sleep(POLL),
             }
         }
     }
@@ -347,20 +252,21 @@ impl Supervisor {
     /// Stop an adopted execution on its own thread: a `running` one past its deadline, or a
     /// `stopping` one whose stop a runtime before this one began.
     pub(crate) fn stop_adopted(self: &Arc<Self>, execution: &Execution) {
-        let (Some(recorded), Some(pgid)) = (execution.identity.clone(), execution.pgid) else {
+        if execution.identity.is_none() || execution.pgid.is_none() {
             return;
-        };
+        }
         if !guard(&self.inner.watched).insert(execution.id.clone()) {
             return;
         }
         let supervisor = Arc::clone(self);
         let execution = execution.clone();
         thread::spawn(move || {
-            let leader = Leader::Adopted(&recorded);
-            if execution.state == ExecutionState::Stopping {
-                supervisor.resume(&execution, pgid, leader);
-            } else {
-                supervisor.stop(&execution.id, pgid, leader);
+            if let Some(leader) = Leader::adopted(&supervisor, &execution) {
+                if execution.state == ExecutionState::Stopping {
+                    supervisor.resume(&execution, leader);
+                } else {
+                    supervisor.stop(&execution, leader);
+                }
             }
             guard(&supervisor.inner.watched).remove(&execution.id);
         });
@@ -368,34 +274,42 @@ impl Supervisor {
 
     /// The deadline stop of a `running` execution. Returns `false` when it did not begin because
     /// the leader is gone and no member of its group is left: its exit is recorded elsewhere.
-    fn stop(&self, id: &str, pgid: i64, mut leader: Leader<'_>) -> bool {
-        let group = match Group::of(pgid) {
+    fn stop(&self, execution: &Execution, mut leader: Leader<'_>) -> bool {
+        let id = &execution.id;
+        let group = match Group::of(self, execution) {
             Ok(group) => group,
-            Err(refused) => {
-                self.unproven(id, ExecutionState::Running, &refused.to_string());
+            Err(reason) => {
+                self.unproven(id, ExecutionState::Running, &reason);
                 return true;
             }
         };
-        if !still_there(&mut leader, group) {
+        if !still_there(&mut leader, &group) {
             return false;
         }
-        // The SIGTERM goes out before the row records it: the row never claims a signal that was
-        // not sent, and a runtime that dies between the two leaves the row `running` past its
+        // The first step goes out before the row records it: the row never claims a signal that
+        // was not sent, and a runtime that dies between the two leaves the row `running` past its
         // deadline, which the next runtime stops again.
         let term_at = now_micros();
-        if let Err(reason) = group.signal(Signal::SIGTERM) {
-            self.unproven(id, ExecutionState::Running, &reason);
-            return true;
-        }
+        let term = match group.term() {
+            Ok(term) => term,
+            Err(reason) => {
+                self.unproven(id, ExecutionState::Running, &reason);
+                return true;
+            }
+        };
         // A debug-build pause only: the step has no failure to inject.
         let _ = hooks::reach_once("execution.stop:signalled");
         let term_sent_at = iso_from_micros(term_at);
+        let mut stopped = Map::new();
+        stopped.insert("stopped_by".to_owned(), json!("deadline"));
+        stopped.insert("term_sent_at".to_owned(), json!(term_sent_at));
+        stopped.extend(term.clone());
         let stopping = Change {
-            observation: Some(json!({"stopped_by": "deadline", "term_sent_at": term_sent_at})),
-            facts: json!({"stopped_by": "deadline", "term_sent_at": term_sent_at}),
+            observation: Some(Value::Object(stopped.clone())),
+            facts: Value::Object(stopped),
             ..Change::default()
         };
-        let Ok(Some(execution)) = self.locked(
+        let Ok(Some(moved)) = self.locked(
             id,
             ExecutionState::Running,
             ExecutionState::Stopping,
@@ -406,58 +320,67 @@ impl Supervisor {
         let plan = StopPlan {
             term_sent_at,
             term_at,
-            grace_seconds: execution.stop_grace_seconds,
+            grace_seconds: moved.stop_grace_seconds,
+            term,
         };
-        self.conclude(id, group, leader, &plan);
+        self.conclude(id, &group, leader, &plan);
         true
     }
 
     /// Drive the stop of a `stopping` execution that a runtime before this one began to its
-    /// proof, from the SIGTERM time it recorded.
-    fn resume(&self, execution: &Execution, pgid: i64, mut leader: Leader<'_>) {
+    /// proof, from the time of the first step it recorded.
+    fn resume(&self, execution: &Execution, mut leader: Leader<'_>) {
         let id = &execution.id;
-        let term_sent_at = execution
-            .observation
-            .as_ref()
+        let recorded = execution.observation.as_ref().and_then(Value::as_object);
+        let term_sent_at = recorded
             .and_then(|observation| observation.get("term_sent_at"))
             .and_then(Value::as_str);
-        let Some(plan) = term_sent_at.and_then(|at| {
+        // The facts the platform recorded about the first step go on into the exit evidence.
+        let term: Map<String, Value> = recorded
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| !matches!(key.as_str(), "stopped_by" | "term_sent_at"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let Some(mut plan) = term_sent_at.and_then(|at| {
             parse_rfc3339(at).map(|term_at| StopPlan {
                 term_sent_at: at.to_owned(),
                 term_at,
                 grace_seconds: execution.stop_grace_seconds,
+                term,
             })
         }) else {
-            self.unproven(
-                id,
-                ExecutionState::Stopping,
-                "the stop recorded no SIGTERM time",
-            );
+            self.unproven(id, ExecutionState::Stopping, os::NO_TERM_TIME);
             return;
         };
-        let group = match Group::of(pgid) {
+        let group = match Group::of(self, execution) {
             Ok(group) => group,
-            Err(refused) => {
-                self.unproven(id, ExecutionState::Stopping, &refused.to_string());
+            Err(reason) => {
+                self.unproven(id, ExecutionState::Stopping, &reason);
                 return;
             }
         };
-        // SIGTERM again while the grace runs: harmless after the first one, and it reaches a
-        // group that a stop recorded before its signal (by an earlier runtime) never got.
+        // The first step again while the grace runs: harmless after the first one, and it
+        // reaches a group that a stop recorded before its signal (by an earlier runtime) never
+        // got.
         if now_micros() < plan.term_at + plan.grace_seconds * 1_000_000
-            && still_there(&mut leader, group)
-            && let Err(reason) = group.signal(Signal::SIGTERM)
+            && still_there(&mut leader, &group)
         {
-            self.unproven(id, ExecutionState::Stopping, &reason);
-            return;
+            match group.term() {
+                Ok(term) => plan.term.extend(term),
+                Err(reason) => {
+                    self.unproven(id, ExecutionState::Stopping, &reason);
+                    return;
+                }
+            }
         }
-        self.conclude(id, group, leader, &plan);
+        self.conclude(id, &group, leader, &plan);
     }
 
-    /// The rest of a stop after the SIGTERM of `plan`: SIGKILL after its grace when a member is
-    /// still there, the wait until the leader is gone and the group is empty, then `exited` with
-    /// the exit evidence and the lease released, in one transition.
-    fn conclude(&self, id: &str, group: Group, mut leader: Leader<'_>, plan: &StopPlan) {
+    /// The rest of a stop after the first step of `plan`: the kill after its grace when a member
+    /// is still there, the wait until the leader is gone and the group is empty, then `exited`
+    /// with the exit evidence and the lease released, in one transition.
+    fn conclude(&self, id: &str, group: &Group, mut leader: Leader<'_>, plan: &StopPlan) {
         let mut kill_sent_at: Option<String> = None;
         let mut kill_at = 0;
         let mut status = None;
@@ -480,8 +403,7 @@ impl Supervisor {
                 match group.members_alive() {
                     Ok(false) => break,
                     Ok(true) => {}
-                    Err(err) => {
-                        let reason = format!("the process group cannot be observed: {err}");
+                    Err(reason) => {
                         self.unproven(id, ExecutionState::Stopping, &reason);
                         return;
                     }
@@ -489,7 +411,7 @@ impl Supervisor {
             }
             let now = now_micros();
             if kill_sent_at.is_none() && now >= plan.term_at + plan.grace_seconds * 1_000_000 {
-                if let Err(reason) = group.signal(Signal::SIGKILL) {
+                if let Err(reason) = group.kill() {
                     self.unproven(id, ExecutionState::Stopping, &reason);
                     return;
                 }
@@ -497,23 +419,15 @@ impl Supervisor {
                 kill_at = now;
             }
             if kill_sent_at.is_some() && now >= kill_at + KILL_PROOF_SECONDS * 1_000_000 {
-                self.unproven(
-                    id,
-                    ExecutionState::Stopping,
-                    "the process group outlived SIGKILL",
-                );
+                self.unproven(id, ExecutionState::Stopping, os::OUTLIVED_KILL);
                 return;
             }
             thread::sleep(POLL);
         }
-        let source = if status.is_some() {
-            "wait-status"
-        } else {
-            "stop-observed"
-        };
-        let exit = json!({
-            "exit_code": status.and_then(|status| status.code()),
-            "signal": status.and_then(|status| status.signal()),
+        let source = status.as_ref().map_or("stop-observed", os::Exit::source);
+        let mut exit = json!({
+            "exit_code": status.as_ref().map_or(Value::Null, os::Exit::code),
+            "signal": status.as_ref().map_or(Value::Null, os::Exit::signal),
             "source": source,
             "stopped_by": "deadline",
             "term_sent_at": plan.term_sent_at,
@@ -521,6 +435,9 @@ impl Supervisor {
             "ended_at": iso_now(),
             "logs": logs(&self.log_paths(id)),
         });
+        if let Some(evidence) = exit.as_object_mut() {
+            evidence.extend(plan.term.clone());
+        }
         let change = Change {
             exit: Some(exit),
             facts: json!({"source": source, "stopped_by": "deadline"}),
@@ -541,20 +458,5 @@ impl Supervisor {
             ..Change::default()
         };
         self.record(id, from, ExecutionState::Unknown, &change);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_group_id_at_or_below_1_is_refused_and_never_signalled() {
-        for pgid in [i64::MIN, -1, 0, 1, i64::from(i32::MAX) + 1] {
-            assert_eq!(Group::of(pgid), Err(RefusedGroup(pgid)), "{pgid}");
-        }
-
-        assert_eq!(Group::of(2), Ok(Group(Pid::from_raw(2))));
-        assert!(outlived(1).unwrap_err().contains("never signalled"));
     }
 }

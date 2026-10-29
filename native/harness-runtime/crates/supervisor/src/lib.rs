@@ -32,6 +32,8 @@ mod container;
 #[cfg(target_os = "linux")]
 mod launch;
 #[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
 mod objects;
 #[cfg(target_os = "linux")]
 pub mod process;
@@ -39,6 +41,11 @@ pub mod process;
 mod qa_run;
 #[cfg(target_os = "linux")]
 mod stop;
+
+// The platform layer behind the seam of `launch` and `stop`: the process of an execution, its
+// identity, the search for it after a restart and the signals of a stop.
+#[cfg(target_os = "linux")]
+use linux as os;
 
 use std::fmt;
 use std::path::PathBuf;
