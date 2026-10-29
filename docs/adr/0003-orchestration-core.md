@@ -34,6 +34,13 @@ Dispatch имеет отдельные состояния отправки и о
 Runtime adapter доставляет только утверждённый brief во внешний или in-process транспорт
 и не решает судьбу отчёта или batch.
 
+Единственная поставляемая реализация доступа worker-а — контейнерный исполнитель `docker`
+(ADR 0025): `harness-runtime` запускает в контейнере утверждённый external dispatch и, при
+заданном `operations.qa.container`, команды QA. Харнесс образы не собирает и не скачивает; он
+поставляет только payload `.harness/container/` с необязательным базовым образом и proxy, а также
+руководство `.harness/docs/container-executor.md`. Настоящий smoke Docker — отдельный CI job вне
+`make verify`, и он проверяет только rootful Docker.
+
 Проект задаёт provider profiles, budgets, зоны и allowed tools. Ядро сверяет фактически
 используемую модель с immutable assignment и наблюдает живость dispatch. Self-report роли
 служит доказательством назначения, но не источником token usage: метрики принимаются только

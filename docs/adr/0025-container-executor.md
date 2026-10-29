@@ -7,6 +7,8 @@ runtime, удаление объектов при выходе исполнен�
 runtime store на Linux), записаны в ADR 0022, раздел «Решения реализации #807». Контейнерный
 QA (#810) монтирует план суженно: каталог clean-room на запись, `git_common` только на чтение и
 `cache` плана; это и другие его решения записаны в ADR 0022, раздел «Решения реализации #810».
+Базовый образ, guide и smoke с настоящим Docker (#710) описывает раздел «Решения реализации #710»
+ниже.
 
 ## Контекст системы
 
@@ -69,3 +71,39 @@ QA (#810) монтирует план суженно: каталог clean-room 
   настоящим Docker выполняется в CI и исключён из `make verify`. Поддержка Podman и rootless Docker
   проверена только матрицей ответов движка (argv), но не настоящим smoke, и остаётся непроверенной
   на живом движке.
+
+## Решения реализации #710
+
+**Принято оператором (2026-10-29).** Ticket #710 поставляет базовый образ worker-а, руководство по
+настройке и smoke с настоящим Docker; Python и Rust runtime он не меняет.
+
+| Текст ADR | Решение #710 | Причина |
+|---|---|---|
+| Флаги агента, включая отключение внутреннего sandbox, задаёт проектный адаптер | Пример адаптера в guide передаёт только allowlist из `brief.allowed_tools`, сохраняет native approval и не отключает sandbox агента; отключение остаётся решением проекта вне примера | Ни один пример не содержит auto-approve и обхода безопасности. |
+| Smoke с настоящим Docker исключён из `make verify` | Маркер `docker_smoke` отбрасывает `addopts` в `pyproject.toml` для любого прогона pytest по умолчанию (`make verify`, `make test`, coverage, diff-coverage); CI job `docker-smoke` выбирает его явно через `-m docker_smoke`, а модуль smoke внесён в `EXCLUDED_FROM_GATE` diff-coverage | Один источник исключения: машина разработчика с Docker не запускает smoke случайно, а gate не считает отброшенные строки непокрытыми. |
+| Образ собирает пользователь командой из guide | Guide поставляется только с `backend-orchestration` как `.harness/docs/container-executor.md` из `harness/docs/`, на английском, как соседние контракты агентов; корневой `docs/` в целевой проект не копируется | Guide читают агенты и пользователи целевого проекта. |
+
+Как работает реализация:
+
+- **`Dockerfile.sandbox`.** Debian stable slim с тегом по дате, `git`, `curl`, `jq`,
+  `ca-certificates`, `python3` с `venv`, `uv` закреплённой версии и Node.js с `npm`. Образ не
+  объявляет `ENTRYPOINT`, `CMD`, `USER`, `VOLUME` и `ENV` и не содержит секретов: точку входа,
+  пользователя, HOME и окружение задаёт runtime. Заголовок даёт команды `docker build` и
+  `podman build` и пример `FROM`; `Dockerfile.proxy` получил строку `podman build`. Оба файла —
+  payload `.harness/container/` с контролем дрейфа.
+- **Smoke.** `tests/orchestration/test_docker_smoke.py` гоняет публичные команды coordinator против
+  настоящих `harness-runtime`, Git worktree, store и `docker`. Путь worker-а: `dispatch propose`,
+  `create` и `send` с исполняемым shell-адаптером в монтировании artifacts; адаптер пишет evidence,
+  а хост проверяет владельца файла (uid и gid хоста), HTTPS и HTTP к `github.com` через sidecar,
+  `403` для `example.com` и отсутствие прямого выхода. Путь QA: `qa run` с gate-командами
+  проверки пользователя и `exit 3` даёт отчёт `failed` и stage evidence с кодом 3. Оба пути
+  проверяют, что объектов с меткой dispatch не осталось. Без движка или образов smoke
+  пропускается, а `HARNESS_REQUIRE_DOCKER_SMOKE=1` превращает пропуск в провал.
+- **CI job `docker-smoke`.** Job собирает `harness-runtime`, базовый образ из
+  `Dockerfile.sandbox`, проектный образ worker-а `FROM` него и proxy-образ, затем запускает
+  `pytest -m docker_smoke` с `HARNESS_REQUIRE_RUNTIME=1` и `HARNESS_REQUIRE_DOCKER_SMOKE=1` и
+  отдаёт отчёт `junit-docker-smoke` в dashboard. Smoke зависит от внешней сети (`github.com`,
+  `example.com`, реестры базовых образов).
+- **Граница проверки.** Настоящий smoke покрывает только rootful Docker на runner GitHub Actions.
+  Podman (rootful и rootless), rootless Docker и SELinux остаются проверенными лишь argv-матрицей и
+  scripted-движком.
