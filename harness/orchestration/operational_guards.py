@@ -54,6 +54,7 @@ ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
 ATTENTION_REASONS = (
+    "operational-hold",
     "unknown-reason",
     "infrastructure-retry-repeated",
     "tooling-retry-repeated",

@@ -248,6 +248,7 @@
       "automatic_decisions": true,
       "unrecognized": "reject",
       "values": {
+        "operational-hold": "The recovery record of the runtime store holds the batch for unknown, missing or unreadable system data; stop integrity-failure until recovery resume releases it.",
         "unknown-reason": "A retry reason is unknown; stop no-automatic-route.",
         "infrastructure-retry-repeated": "Infrastructure retries exceeded attention_policy.max_infrastructure_retries.",
         "tooling-retry-repeated": "A tool blocked the same candidate repeatedly; the tool needs a fix.",
@@ -304,6 +305,7 @@
         "harness-snapshot-changed": "The installed harness runtime differs from the pinned snapshot.",
         "deterministic-gate-failed": "A deterministic gate of the policy failed.",
         "ledger-validation-failed": "Ledger validation failed.",
+        "operational-hold": "The recovery record of the runtime store holds the batch; recovery resume releases it, nothing is abandoned.",
         "unknown-reason": "The retry reason is unknown, or the coordinator refuses a developer retry because no code defect is proven. A human names the cause with --reason-category.",
         "abandon-dead-end": "The coordinator refuses the retry route, or the batch is blocked or failed. A human decides.",
         "supersede-dead-end": "The only remaining route is a supersede, which needs a human.",
@@ -324,7 +326,8 @@
           "worktree-mismatch",
           "harness-snapshot-changed",
           "deterministic-gate-failed",
-          "ledger-validation-failed"
+          "ledger-validation-failed",
+          "operational-hold"
         ],
         "no-automatic-route": [
           "unknown-reason",

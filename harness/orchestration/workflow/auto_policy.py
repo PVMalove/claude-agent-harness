@@ -59,7 +59,7 @@ from harness.orchestration.workflow import (
     failure_domains,
     resolver_state,
 )
-from harness.orchestration.workflow.attention import _attention_findings
+from harness.orchestration.workflow.attention import _attention_findings, _held
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _pending_report,
@@ -72,6 +72,8 @@ from harness.orchestration.workflow.reports import (
 
 # An attention reason is a stop of the closed list: the automatic path never resolves attention.
 ATTENTION_STOPS = {
+    # The runtime store holds the batch (ADR 0026): recovery resume, never an abandon.
+    "operational-hold": ("integrity-failure", "operational-hold"),
     "stale-dispatch": ("integrity-failure", "stale"),
     "stale-evidence": ("integrity-failure", "stale"),
     "retry-queued-too-long": ("integrity-failure", "stale"),
@@ -555,8 +557,13 @@ def _continuation_stops(config: JsonObject, batch: JsonObject) -> list[Stop]:
 def fact_stops(
     repo: Path, root: Path, config: JsonObject, batch: JsonObject, moment: str
 ) -> list[Stop]:
-    """Every stop the ledger facts of a validated batch show, in detection order."""
+    """Every stop the ledger facts of a validated batch and its operational hold show, in
+    detection order."""
     stops: list[Stop] = []
+    if (held := _held(root, batch.get("batch_id"))) is not None:
+        stops.append(
+            Stop("integrity-failure", "operational-hold", {"hold": held.to_dict()})
+        )
     try:
         _validate_harness_runtime_snapshot(repo, batch)
     except CoordinatorError as exc:

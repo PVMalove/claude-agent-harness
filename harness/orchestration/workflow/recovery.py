@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import operational_hold
 from harness.orchestration.core import utils
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -428,6 +429,7 @@ def _record_resumed_batch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         ledger.validate()
         batch = _load_batch(root, args.batch)
+        operational_hold.require_no_hold(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
         if (repeated := _repeated_resume(batch)) is not None:
@@ -680,6 +682,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         ledger.validate()
         batch = _load_batch(root, args.batch)
+        operational_hold.require_no_hold(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
         _no_live_worker(root, batch, repo=repo)

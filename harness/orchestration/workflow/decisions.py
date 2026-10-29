@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
-from harness.orchestration import extensions, qa_lane
+from harness.orchestration import extensions, operational_hold, qa_lane
 from harness.orchestration.contract import low_risk_eligible
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -219,6 +219,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
     with read_state(ledger, repo):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        held = operational_hold.current_hold(root, args.batch)
         entry = None
         if args.dispatch:
             entry = _dispatch_entry(batch, args.dispatch)
@@ -236,7 +237,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             ]
             entry = pending[0] if len(pending) == 1 else None
         if entry is None:
-            return {
+            next_packet: JsonObject = {
                 "batch_id": batch["batch_id"],
                 "ticket": batch["ticket"],
                 "action": "approve next dispatch",
@@ -263,6 +264,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "approval_reason": "the next immutable dispatch has not been created",
                 "options": ["accept", "block", "full review"],
             }
+            return _hold_options(next_packet, batch, held)
         dispatch = _load_dispatch(root, entry["dispatch_id"])
         report = (
             _pending_report(root, batch, entry)
@@ -285,7 +287,10 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             plan_rules.coverage(report, dispatch, resolve) if report else (None, None)
         )
         route_preview: JsonObject | None = None
-        if report is not None and "decision" not in entry:
+        if report is not None and "decision" not in entry and held is not None:
+            # Nothing is decided on a held batch: recovery comes first, never an abandon.
+            route_preview = {"hold": held.to_dict()}
+        elif report is not None and "decision" not in entry:
             # The same computation ``batch decide`` runs, with the same flags; nothing is written.
             try:
                 retry_preview = _decide_retry_route(
@@ -405,7 +410,39 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "approval_required": True,
                 "next_role": dispatch.get("role"),
             }
+        return _hold_options(packet, batch, held)
+
+
+def _hold_options(
+    packet: JsonObject, batch: JsonObject, held: operational_hold.Hold | None
+) -> JsonObject:
+    """The packet with the batch's operational hold: a held batch offers no option, only the
+    recovery route (ADR 0026)."""
+    packet["operational_hold"] = None if held is None else held.to_dict()
+    if held is None:
         return packet
+    batch_id = batch["batch_id"]
+    # Recovery never resolves attention, so a raised one is resolved before resume.
+    resolve = (
+        [f"batch attention resolve --batch {batch_id}"]
+        if batch.get("needs_attention") is True
+        else []
+    )
+    packet["options"] = []
+    packet["approval_reason"] = (
+        "the runtime store holds this batch; recovery comes before any decision"
+    )
+    packet["recovery_route"] = {
+        "decision": None,
+        "options": [],
+        "approval_required": True,
+        "commands": [
+            f"recovery status --batch {batch_id}",
+            *resolve,
+            f"recovery resume --batch {batch_id}",
+        ],
+    }
+    return packet
 
 
 def _carry_over_preview(
@@ -1312,6 +1349,12 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         from harness.orchestration.workflow import auto_policy
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
+        if auto_inputs is None or not approvals.auto_active(
+            core_config._config(repo), batch
+        ):
+            # A held batch is decided on nothing; the active automatic path records its
+            # operational-hold stop below instead, and never decides or abandons it.
+            operational_hold.require_no_hold(root, args.batch)
         try:
             _validate_batch_integrity(root, batch)
         except CoordinatorError as exc:

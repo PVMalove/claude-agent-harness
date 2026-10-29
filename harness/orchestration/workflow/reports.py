@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.orchestration import operational_hold
 from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -225,6 +226,7 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         progress = dispatch.get("preserved_progress")
         if (
             progress is not None
@@ -697,6 +699,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
             capture_unaccepted,
@@ -1997,6 +2000,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
+        operational_hold.require_no_hold(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
             capture_unaccepted,
