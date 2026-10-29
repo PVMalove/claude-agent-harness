@@ -19,6 +19,13 @@
 //! failure of a server that is already ready undefined, so this implementation picks 1 for it. A
 //! supervisor learns that the start worked from the readiness line, so a failure to write that
 //! line is a refusal to start (2), not a failure of a running server.
+//!
+//! `harness-runtime ctrl-break --job <name> --group <pgid> --pid <pid> --created <time>` is the
+//! ctrl-break helper of a Windows deadline stop (ADR 0022, section 3): the runtime starts it
+//! without a console, and it sends `CTRL_BREAK` to the process group on the console of a live
+//! member of the job object (`supervisor::ctrl_break`). It exits with 0 (delivered), 3 (the job
+//! has no live member) or 1 (not delivered; the reason on stderr). Other platforms refuse it with
+//! 2.
 
 use std::env;
 use std::ffi::OsString;
@@ -109,6 +116,92 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         repo,
         approval,
     })
+}
+
+/// What the ctrl-break helper is asked to do.
+#[derive(Debug, PartialEq, Eq)]
+struct CtrlBreakArgs {
+    job: String,
+    group: u32,
+    pid: u32,
+    created: String,
+}
+
+const CTRL_BREAK_USAGE: &str =
+    "usage: harness-runtime ctrl-break --job <name> --group <pgid> --pid <pid> --created <time>";
+
+fn parse_ctrl_break(args: impl IntoIterator<Item = OsString>) -> Result<CtrlBreakArgs, String> {
+    let (mut job, mut group, mut pid, mut created) = (None, None, None, None);
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        let field = match flag.to_str() {
+            Some("--job") => &mut job,
+            Some("--group") => &mut group,
+            Some("--pid") => &mut pid,
+            Some("--created") => &mut created,
+            _ => return Err(format!("unknown argument {flag:?}; {CTRL_BREAK_USAGE}")),
+        };
+        let value = args
+            .next()
+            .and_then(|value| value.into_string().ok())
+            .ok_or_else(|| {
+                format!(
+                    "{} needs a value; {CTRL_BREAK_USAGE}",
+                    flag.to_string_lossy()
+                )
+            })?;
+        *field = Some(value);
+    }
+    let number = |value: Option<String>, name: &str| {
+        value
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|number| *number > 0)
+            .ok_or_else(|| format!("{name} needs a positive number; {CTRL_BREAK_USAGE}"))
+    };
+    Ok(CtrlBreakArgs {
+        job: job.ok_or_else(|| format!("--job is missing; {CTRL_BREAK_USAGE}"))?,
+        group: number(group, "--group")?,
+        pid: number(pid, "--pid")?,
+        created: created.ok_or_else(|| format!("--created is missing; {CTRL_BREAK_USAGE}"))?,
+    })
+}
+
+/// Run the ctrl-break helper and turn its outcome into the exit code.
+fn ctrl_break(args: impl IntoIterator<Item = OsString>) -> ExitCode {
+    let request = match parse_ctrl_break(args) {
+        Ok(request) => request,
+        Err(message) => {
+            return Report::new(
+                ErrorCode::MalformedRequest,
+                message,
+                "the runtime starts the ctrl-break helper itself; pass every flag of the usage",
+            )
+            .print(EXIT_REFUSED);
+        }
+    };
+    #[cfg(windows)]
+    {
+        match supervisor::ctrl_break(&request.job, request.group, request.pid, &request.created) {
+            supervisor::CtrlBreak::Delivered => ExitCode::SUCCESS,
+            supervisor::CtrlBreak::NoMember => ExitCode::from(supervisor::CTRL_BREAK_NO_MEMBER),
+            supervisor::CtrlBreak::Failed(reason) => {
+                eprintln!("ERROR: {reason}");
+                ExitCode::from(EXIT_FAILED)
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Report::new(
+            ErrorCode::UnknownOperation,
+            format!(
+                "the ctrl-break helper serves only Windows, not the job {}",
+                request.job
+            ),
+            "a stop on this platform signals the process group itself",
+        )
+        .print(EXIT_REFUSED)
+    }
 }
 
 /// What an error line and its `REMEDY:` line say. The remedy line starts with the protocol error
@@ -264,7 +357,11 @@ fn rollback(args: &Args) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args(env::args_os().skip(1)) {
+    let mut words = env::args_os().skip(1).peekable();
+    if words.peek().and_then(|word| word.to_str()) == Some("ctrl-break") {
+        return ctrl_break(words.skip(1));
+    }
+    let args = match parse_args(words) {
         Ok(args) => args,
         Err(message) => {
             return Report::new(
@@ -338,6 +435,54 @@ mod tests {
     #[test]
     fn serve_defaults_to_the_working_directory() {
         assert_eq!(parse(&["serve"]).unwrap().repo, env::current_dir().unwrap());
+    }
+
+    #[test]
+    fn ctrl_break_takes_the_job_the_group_the_leader_and_its_creation_time() {
+        let words = [
+            "--job",
+            r"Global\harness-runtime-execution-ab",
+            "--group",
+            "4242",
+            "--pid",
+            "4242",
+            "--created",
+            "133000000000000000",
+        ];
+
+        let args = parse_ctrl_break(words.iter().map(OsString::from)).unwrap();
+
+        assert_eq!(
+            args,
+            CtrlBreakArgs {
+                job: r"Global\harness-runtime-execution-ab".to_owned(),
+                group: 4242,
+                pid: 4242,
+                created: "133000000000000000".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn ctrl_break_refuses_a_missing_flag_and_a_group_of_zero() {
+        let parse = |words: &[&str]| parse_ctrl_break(words.iter().map(OsString::from));
+
+        assert!(
+            parse(&["--job", "j", "--group", "1", "--pid", "1"])
+                .unwrap_err()
+                .contains("--created")
+        );
+        assert!(
+            parse(&["--job", "j", "--group", "0", "--pid", "1", "--created", "1"])
+                .unwrap_err()
+                .contains("--group")
+        );
+        assert!(
+            parse(&["--signal", "x"])
+                .unwrap_err()
+                .contains("unknown argument")
+        );
+        assert!(parse(&["--job"]).unwrap_err().contains("needs a value"));
     }
 
     #[test]

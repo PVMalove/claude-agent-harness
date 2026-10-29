@@ -60,6 +60,8 @@ mod windows;
 use linux as os;
 #[cfg(windows)]
 use windows as os;
+#[cfg(windows)]
+pub use windows::{CTRL_BREAK_NO_MEMBER, CtrlBreak, ctrl_break};
 
 use std::fmt;
 use std::path::PathBuf;
@@ -103,6 +105,10 @@ pub struct Supervisor {
     engines: Engines,
     #[cfg(any(target_os = "linux", windows))]
     inner: launch::Inner,
+    /// The `harness-runtime` executable that runs the ctrl-break helper of a stop; `None` is the
+    /// executable of this process.
+    #[cfg(windows)]
+    ctrl_break_helper: Option<PathBuf>,
 }
 
 impl fmt::Debug for Supervisor {
@@ -132,7 +138,26 @@ impl Supervisor {
             engines: Arc::new(engine::cli),
             #[cfg(any(target_os = "linux", windows))]
             inner: launch::Inner::default(),
+            #[cfg(windows)]
+            ctrl_break_helper: None,
         }
+    }
+
+    /// The same supervisor with `helper` as the `harness-runtime` executable that runs the
+    /// ctrl-break helper of a stop: a test whose process is not the runtime names it.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn with_ctrl_break_helper(mut self, helper: PathBuf) -> Self {
+        self.ctrl_break_helper = Some(helper);
+        self
+    }
+
+    /// The executable of the ctrl-break helper.
+    #[cfg(windows)]
+    fn ctrl_break_helper(&self) -> Option<PathBuf> {
+        self.ctrl_break_helper
+            .clone()
+            .or_else(|| std::env::current_exe().ok())
     }
 
     /// The same supervisor for the repository of the canonical Git common directory

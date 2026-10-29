@@ -25,7 +25,11 @@
 //! written yet.
 //!
 //! The signals, the group and the leader come from the platform layer (`crate::os`); this module
-//! holds the order of the steps and the records, which are the same on every platform.
+//! holds the order of the steps and the records, which are the same on every platform. On Windows
+//! the first step is `CTRL_BREAK` to the recorded process group and the kill is
+//! `TerminateJobObject`; the group is the job object of the execution, and a `CTRL_BREAK` that was
+//! not delivered is recorded as the fact `ctrl_break` of the row and of the exit evidence, while
+//! the stop goes on to the kill.
 
 use std::fs::File;
 use std::io::{self, Read};

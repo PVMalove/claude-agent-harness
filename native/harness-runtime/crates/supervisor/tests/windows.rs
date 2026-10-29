@@ -71,6 +71,8 @@ impl Repo {
         };
         let mut brief = body("dispatch");
         brief.insert("resolved_transport".to_owned(), json!("external"));
+        // The tests run in parallel: each brief, so each operation id and job name, is its own.
+        brief.insert("test_case".to_owned(), json!(name));
         brief.insert(
             "execution".to_owned(),
             json!({"supervisor": "harness-runtime", "timeout_seconds": 300,

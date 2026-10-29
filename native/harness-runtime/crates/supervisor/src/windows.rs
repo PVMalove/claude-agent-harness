@@ -15,15 +15,24 @@
 //! observed by its pid and creation time, and its job by the number of its members
 //! (`job::outcome`); a live leader in its job is held by this runtime until its row ends, so its
 //! exit code stays readable after it ends.
+//!
+//! A stop at the deadline sends `CTRL_BREAK` to the recorded process group through the
+//! ctrl-break helper (`harness-runtime ctrl-break`, see `ctrl_break`): no runtime shares the
+//! console of an execution, so a short process without a console attaches to the hidden console
+//! of a live member of the job and generates the event there. After `stop_grace_seconds`
+//! `TerminateJobObject` ends every member that is left with exit code 137. The stop is proven when
+//! the job is empty and the leader is gone.
 
-use std::io;
+use std::io::{self, Read};
 use std::os::windows::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use platform_ffi::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, Job, JobAccess, Process,
-    create_private_file, current_user_sid,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS, Job, JobAccess,
+    Process, create_private_file, current_user_sid, send_ctrl_break,
 };
 use serde_json::{Map, Value, json};
 use state::executions::Execution;
@@ -354,10 +363,15 @@ impl Leader<'_> {
     }
 }
 
-/// The job object of an execution, the only target of a stop. The process group id the receipt
-/// recorded must be the pid of the recorded leader.
+/// The job object of an execution, the only target of a stop, and the recorded process group of
+/// its leader, the only target of `CTRL_BREAK`. The process group id the receipt recorded must
+/// be the pid of the recorded leader.
 pub(crate) struct Group {
+    name: String,
     job: Option<Job>,
+    pgid: u32,
+    leader: Identity,
+    helper: Option<PathBuf>,
 }
 
 impl Group {
@@ -366,17 +380,32 @@ impl Group {
     ///
     /// # Errors
     /// Why the group is never stopped.
-    pub(crate) fn of(_supervisor: &Supervisor, execution: &Execution) -> Result<Self, String> {
+    pub(crate) fn of(supervisor: &Supervisor, execution: &Execution) -> Result<Self, String> {
         let pgid = execution.pgid.unwrap_or(0);
-        let leader = execution.identity.as_ref().map(|identity| identity.pid);
-        if pgid <= 0 || leader != Some(pgid) {
-            return Err(format!(
+        let refused = || {
+            format!(
                 "the recorded process group {pgid} is not the pid of the recorded leader: it is never signalled"
-            ));
-        }
-        let job = Job::open(&job_name(execution), JobAccess::Control)
+            )
+        };
+        let leader = execution
+            .identity
+            .clone()
+            .filter(|identity| identity.pid == pgid)
+            .ok_or_else(refused)?;
+        let pgid = u32::try_from(pgid)
+            .ok()
+            .filter(|pgid| *pgid > 0)
+            .ok_or_else(refused)?;
+        let name = job_name(execution);
+        let job = Job::open(&name, JobAccess::Control)
             .map_err(|err| format!("the job object cannot be opened: {err}"))?;
-        Ok(Self { job })
+        Ok(Self {
+            name,
+            job,
+            pgid,
+            leader,
+            helper: supervisor.ctrl_break_helper(),
+        })
     }
 
     /// Whether a process of the job has not ended.
@@ -391,21 +420,162 @@ impl Group {
         })
     }
 
-    /// The first step of a stop.
+    /// The first step of a stop: `CTRL_BREAK` to the recorded group, through the ctrl-break
+    /// helper, which runs without a console and attaches to the one of a live member of the job.
+    /// A `CTRL_BREAK` that was not delivered is a fact of the stop, not its failure: the kill after
+    /// the grace and the empty job prove the stop.
     ///
     /// # Errors
-    /// Not served yet: the stop cannot prove its outcome.
-    #[allow(clippy::unused_self)]
+    /// Never: the outcome is the fact `ctrl_break` (`delivered`, `no-member` or `failed`, with
+    /// `ctrl_break_error`).
     pub(crate) fn term(&self) -> Result<Map<String, Value>, String> {
-        Err("the deadline stop of a Windows execution is not served yet".to_owned())
+        let mut facts = Map::new();
+        let outcome = match self.send_ctrl_break() {
+            CtrlBreak::Delivered => "delivered",
+            CtrlBreak::NoMember => "no-member",
+            CtrlBreak::Failed(reason) => {
+                facts.insert("ctrl_break_error".to_owned(), json!(reason));
+                "failed"
+            }
+        };
+        facts.insert("ctrl_break".to_owned(), json!(outcome));
+        Ok(facts)
     }
 
-    /// The last step of a stop.
+    /// Run the ctrl-break helper and wait for it up to `HELPER_WAIT`; one that does not end by
+    /// then is killed.
+    fn send_ctrl_break(&self) -> CtrlBreak {
+        if self.job.is_none() {
+            return CtrlBreak::NoMember;
+        }
+        let Some(helper) = &self.helper else {
+            return CtrlBreak::Failed(
+                "no ctrl-break helper: the runtime path is unknown".to_owned(),
+            );
+        };
+        let spawned = Command::new(helper)
+            .args(["ctrl-break", "--job", &self.name, "--group"])
+            .arg(self.pgid.to_string())
+            .arg("--pid")
+            .arg(self.leader.pid.to_string())
+            .arg("--created")
+            .arg(&self.leader.start_time)
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(err) => {
+                return CtrlBreak::Failed(format!("the ctrl-break helper cannot start: {err}"));
+            }
+        };
+        let until = Instant::now() + HELPER_WAIT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let mut stderr = String::new();
+                    if let Some(mut pipe) = child.stderr.take() {
+                        let _ = pipe.read_to_string(&mut stderr);
+                    }
+                    return match status.code() {
+                        Some(0) => CtrlBreak::Delivered,
+                        Some(code) if code == i32::from(CTRL_BREAK_NO_MEMBER) => {
+                            CtrlBreak::NoMember
+                        }
+                        code => CtrlBreak::Failed(format!(
+                            "the ctrl-break helper ended with {code:?}: {}",
+                            stderr.trim()
+                        )),
+                    };
+                }
+                Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(20)),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return CtrlBreak::Failed(format!(
+                        "the ctrl-break helper did not end within {} seconds",
+                        HELPER_WAIT.as_secs()
+                    ));
+                }
+                Err(err) => {
+                    return CtrlBreak::Failed(format!(
+                        "the ctrl-break helper cannot be waited for: {err}"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// The last step of a stop: `TerminateJobObject` with exit code 137 for every member; a job
+    /// without a name has none.
     ///
     /// # Errors
-    /// Not served yet.
-    #[allow(clippy::unused_self)]
+    /// Why the job was not terminated.
     pub(crate) fn kill(&self) -> Result<(), String> {
-        Err("the deadline stop of a Windows execution is not served yet".to_owned())
+        self.job.as_ref().map_or(Ok(()), |job| {
+            job.terminate(KILL_EXIT_CODE)
+                .map_err(|err| format!("TerminateJobObject failed: {err}"))
+        })
+    }
+}
+
+/// The exit code `TerminateJobObject` gives every member of a stopped job: 128 + 9, as SIGKILL on
+/// Linux.
+const KILL_EXIT_CODE: u32 = 137;
+/// How long a stop waits for the ctrl-break helper.
+const HELPER_WAIT: Duration = Duration::from_secs(10);
+/// The exit code of the ctrl-break helper when the job has no live member or no name.
+pub const CTRL_BREAK_NO_MEMBER: u8 = 3;
+
+/// What the ctrl-break helper did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CtrlBreak {
+    /// `CTRL_BREAK` reached the group on the console of a live member of the job.
+    Delivered,
+    /// The job has no name or no live member: nobody to deliver to.
+    NoMember,
+    /// The event was not delivered; the reason.
+    Failed(String),
+}
+
+/// The ctrl-break helper (`harness-runtime ctrl-break`): send `CTRL_BREAK` to the process group
+/// `group` on the console of a live member of the job object `job`. The member is the leader
+/// `pid` when its creation time is `created` and it is a live member of the job, else the first
+/// live member of the job: a process outside the job, such as one that reuses the pid of the
+/// leader, is never touched. Only a process without a console of its own calls this, because it
+/// attaches to the console of the member.
+pub fn ctrl_break(job: &str, group: u32, pid: u32, created: &str) -> CtrlBreak {
+    if let Err(err) = platform_ffi::ignore_ctrl_events() {
+        return CtrlBreak::Failed(format!("the helper cannot ignore console events: {err}"));
+    }
+    let job = match Job::open(job, JobAccess::Query) {
+        Ok(Some(job)) => job,
+        Ok(None) => return CtrlBreak::NoMember,
+        Err(err) => return CtrlBreak::Failed(format!("the job object cannot be opened: {err}")),
+    };
+    let live = |process: &Process| {
+        matches!(process.exit_code(), Ok(None)) && matches!(job.contains(process), Ok(true))
+    };
+    let leader = Process::open(pid).ok().flatten().filter(|leader| {
+        leader
+            .creation_time()
+            .is_ok_and(|time| time.to_string() == created)
+            && live(leader)
+    });
+    let member = leader.or_else(|| {
+        job.processes()
+            .ok()?
+            .into_iter()
+            .filter_map(|pid| Process::open(pid).ok().flatten())
+            .find(|process| live(process))
+    });
+    let Some(member) = member else {
+        return CtrlBreak::NoMember;
+    };
+    match send_ctrl_break(&member, group) {
+        Ok(()) => CtrlBreak::Delivered,
+        Err(err) => CtrlBreak::Failed(format!("CTRL_BREAK was not delivered: {err}")),
     }
 }

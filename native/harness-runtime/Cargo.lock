@@ -164,6 +164,7 @@ dependencies = [
  "contracts",
  "ctrlc",
  "ipc",
+ "platform-ffi",
  "rusqlite",
  "serde_json",
  "state",
