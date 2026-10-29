@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from harness.json_types import JsonObject as Document
 from harness.orchestration.core.constants import BatchState, DispatchState
 from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
@@ -1087,4 +1088,121 @@ class Supervised:
         for group in labelled_groups(self.dispatch) if self.dispatch else set():
             with contextlib.suppress(OSError):
                 os.killpg(group, signal.SIGKILL)
+        self.runtime.stop()
+
+
+# -- recovery of a batch the store holds ------------------------------------------------------------
+
+
+def headless(
+    repo: Path, runtime: ServingRuntime, *args: str, python: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """The coordinator CLI as a console runs it: a new session with no terminal and stdin
+    closed. ``python`` is a prelude that runs in the coordinator process before ``main``."""
+    prelude = (python or "") + (
+        "\nimport sys\nfrom harness.orchestration import coordinator\n"
+        "sys.argv = ['coordinator', *sys.argv[1:]]\n"
+        "raise SystemExit(coordinator.main())\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", prelude, "--repo", str(repo), *args],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        start_new_session=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT), **runtime.environ},
+    )
+
+
+class Recovery:
+    """A cut-over batch with one architect dispatch, the runtime that serves it, and the recovery
+    commands as the console runs them: a coordinator process without a terminal or stdin."""
+
+    def __init__(self, tmp: Path, *, report: bool = False) -> None:
+        self.repo, ids = write_coordinator_state(tmp, report=report)
+        self.batch = ids["batch_id"]
+        self.dispatch = ids["dispatch_id"]
+        result = migrate(self.repo)
+        assert result.returncode == 0, result.stderr
+        self.runtime = ServingRuntime(self.repo)
+
+    @property
+    def batch_path(self) -> str:
+        return f"batches/{self.batch}.json"
+
+    @property
+    def hold_path(self) -> str:
+        return f"recovery/hold/{self.batch}.json"
+
+    @property
+    def intent_path(self) -> str:
+        return f"recovery/intent/{self.batch}.json"
+
+    def cli(self, *args: str, python: str | None = None) -> subprocess.CompletedProcess[str]:
+        return headless(self.repo, self.runtime, *args, python=python)
+
+    def recovery(
+        self, action: str, *extra: str, python: str | None = None
+    ) -> tuple[subprocess.CompletedProcess[str], Document | None]:
+        """``recovery <action> --batch <batch>``: the process and the document it printed."""
+        result = self.cli("recovery", action, "--batch", self.batch, *extra, python=python)
+        document = json.loads(result.stdout) if result.stdout.strip() else None
+        return result, document
+
+    def records(self, *paths: str) -> dict[str, Document]:
+        return store_records(self.repo, self.runtime, *paths)
+
+    def revisions(self, *paths: str) -> dict[str, int]:
+        return store_revisions(self.repo, self.runtime, *paths)
+
+    def audit_records(self) -> int:
+        revision = store_call(self.repo, self.runtime, "state.read")["_revision"]
+        assert isinstance(revision, int)
+        return revision
+
+    def write(self, *mutations: JsonObject, batch_id: str | None = None) -> JsonObject:
+        """Data the coordinator never writes, straight through ``state.write``."""
+        return store_call(
+            self.repo,
+            self.runtime,
+            "state.write",
+            {"mutations": list(mutations)},
+            batch_id=batch_id or self.batch,
+        )
+
+    def replace(self, path: str, record: Document) -> JsonObject:
+        revision = self.revisions(path)[path]
+        return self.write(
+            {
+                "op": "replace",
+                "path": path,
+                "content": _canonical(record),
+                "expected_revision": revision,
+            }
+        )
+
+    def hold(self, reason: str = "unknown-value", message: str = "a fixture hold") -> None:
+        """A hold record of the batch as the coordinator writes it."""
+        self.write(
+            {
+                "op": "create",
+                "path": self.hold_path,
+                "content": _canonical(
+                    {
+                        "contract": "operationalHold.v1",
+                        "batch_id": self.batch,
+                        "state": "held",
+                        "failure": {
+                            "code": "integrity-failure",
+                            "step": f"hold:{reason}",
+                            "message": message,
+                        },
+                        "updated_at": "2026-10-29T00:00:00+00:00",
+                    }
+                ),
+            }
+        )
+
+    def stop(self) -> None:
         self.runtime.stop()

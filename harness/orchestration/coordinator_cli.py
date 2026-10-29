@@ -1029,4 +1029,68 @@ def build_parser(
     _common(report_complete)
     report_complete.add_argument("--dispatch", required=True)
     report_complete.set_defaults(handler=handlers.complete_report)
+    recovery = commands.add_parser(
+        "recovery",
+        help="status, reload, resume, fix and abort of a batch the runtime store holds or "
+        "the coordinator stopped; never reads stdin, exits 0 on success and 2 on refusal",
+    )
+    recovery_commands = recovery.add_subparsers(dest="recovery_command", required=True)
+    for name, handler, help_text in (
+        (
+            "status",
+            handlers.recovery_status,
+            "read-only reconciliation checks, diagnostics and the available actions",
+        ),
+        (
+            "reload",
+            handlers.recovery_reload,
+            "re-read and validate the current configuration and the runtime; never starts "
+            "a worker",
+        ),
+        (
+            "resume",
+            handlers.recovery_resume,
+            "re-check the batch and release its hold through the existing approval gates",
+        ),
+        (
+            "fix",
+            handlers.recovery_fix,
+            "preview the safe normalization of the configuration; --apply writes it",
+        ),
+        (
+            "abort",
+            handlers.recovery_abort,
+            "record that the operator left recovery; nothing is abandoned or stopped",
+        ),
+    ):
+        command = recovery_commands.add_parser(name, help=help_text)
+        _common(command)
+        command.add_argument("--batch", required=True)
+        command.add_argument(
+            "--json",
+            action="store_true",
+            help="structured output; the coordinator always prints JSON",
+        )
+        if name == "status":
+            command.add_argument(
+                "--skip",
+                action="append",
+                metavar="DIAGNOSTIC_ID",
+                help="hide an allowlisted advisory for this call only; repeatable",
+            )
+        if name == "resume":
+            command.add_argument(
+                "--approved-by",
+                help="human who approves the audited resume-stop of a stopped batch",
+            )
+            command.add_argument("--approved-at", help="time of that approval")
+            command.add_argument("--note", help="what was checked before resuming")
+        if name == "fix":
+            command.add_argument(
+                "--apply",
+                action="store_true",
+                help="write the normalization through the configuration transaction",
+            )
+        # Recovery runs on the installed runtime, like resume-stop and rewind.
+        command.set_defaults(handler=handler, installed_runtime_only=True)
     return root

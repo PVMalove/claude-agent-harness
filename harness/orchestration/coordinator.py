@@ -125,6 +125,21 @@ from harness.orchestration.workflow.recovery import (
     resume_stopped_batch as resume_stopped_batch,
 )
 from harness.orchestration.workflow.recovery import rewind_batch as rewind_batch
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_abort as recovery_abort,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_fix as recovery_fix,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_reload as recovery_reload,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_resume as recovery_resume,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_status as recovery_status,
+)
 from harness.orchestration.workflow.carried_items import (
     carry_over_findings as carry_over_findings,
 )
@@ -239,6 +254,9 @@ def main() -> int:
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     if args.command == "config" and output.get("valid") is False:
+        return 2
+    # A recovery refusal prints its structured diagnostics and exits 2, never waiting for input.
+    if args.command == "recovery" and output.get("outcome") == "refused":
         return 2
     return 0
 

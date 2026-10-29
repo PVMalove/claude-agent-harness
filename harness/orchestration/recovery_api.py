@@ -71,7 +71,7 @@ from harness.orchestration.operational_hold import (
     OperationalHoldError,
     sanitize_detail,
 )
-from harness.orchestration.runtime_client import PROTOCOL_VERSION, RuntimeClientError
+from harness.orchestration.runtime_client import RuntimeClientError
 
 RECOVERY_CONTRACT = "recoveryStatus.v1"
 INTENT_CONTRACT = "recoveryIntent.v1"
@@ -125,8 +125,10 @@ _RUNTIME_CODES = {
     "protocol_unsupported": "runtime-compatibility",
     "internal": "internal-error",
 }
-# The features of the runtime hello that recovery reads and writes through.
+# The features of the runtime hello that recovery reads and writes through, and the protocol
+# that added the recovery records (minor 5).
 RECOVERY_FEATURES = ("state.read", "state.write", "state.recovery")
+RECOVERY_PROTOCOL = (1, 5)
 
 
 @dataclass(frozen=True)
@@ -358,9 +360,17 @@ def runtime_problems(hello: Mapping[str, object]) -> list[str]:
     """Why the runtime of ``hello`` cannot keep the recovery records; empty when it can."""
     problems = []
     protocol = hello.get("protocol")
-    expected = {"major": PROTOCOL_VERSION[0], "minor": PROTOCOL_VERSION[1]}
-    if protocol != expected:
-        problems.append(f"the runtime speaks protocol {protocol!r}, recovery needs {expected!r}")
+    major, minor = RECOVERY_PROTOCOL
+    if not (
+        isinstance(protocol, dict)
+        and protocol.get("major") == major
+        and isinstance(protocol.get("minor"), int)
+        and protocol["minor"] >= minor
+    ):
+        problems.append(
+            f"the runtime speaks protocol {protocol!r}, recovery needs {major}.{minor} or a "
+            "later minor"
+        )
     if not hello.get("store_id"):
         problems.append("the runtime serves no store")
     features = hello.get("features")
@@ -835,8 +845,8 @@ class Survey:
                     "it, then run 'recovery reload'",
                     expected={
                         "protocol": {
-                            "major": PROTOCOL_VERSION[0],
-                            "minor": PROTOCOL_VERSION[1],
+                            "major": RECOVERY_PROTOCOL[0],
+                            "minor": RECOVERY_PROTOCOL[1],
                         },
                         "features": list(RECOVERY_FEATURES),
                     },
@@ -1082,7 +1092,9 @@ class Survey:
 
 
 _UNKNOWN_VALUE = re.compile(r"\binvalid \w+ value '")
-_MISSING_VALUE = re.compile(r"\binvalid \w+ value None\b|\bmissing\b|\brequires?\b")
+_MISSING_VALUE = re.compile(
+    r"\binvalid \w+ value None\b|\bmissing\b|\bincomplete\b|\brequires?\b"
+)
 
 
 def hold_reason_of(exc: HarnessError) -> str:
