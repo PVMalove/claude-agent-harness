@@ -45,6 +45,11 @@ use crate::time::iso_now;
 const FREE_COLLECTIONS: [&str; 3] = ["reports", "qa-lane", "qa-artifacts"];
 /// The collections whose records are evidence: written once, never replaced or deleted.
 const EVIDENCE_COLLECTIONS: [&str; 2] = ["reports", "qa-artifacts"];
+/// The recovery records of a batch (ADR 0026): `recovery/hold/<batch_id>.json`, its operational
+/// hold, and `recovery/intent/<batch_id>.json`, its recovery intent. The coordinator decides them;
+/// the store creates and replaces them under the revision of the row and never deletes one.
+const RECOVERY: &str = "recovery";
+const RECOVERY_KINDS: [&str; 2] = ["hold", "intent"];
 const MAX_MUTATIONS: usize = 1_000;
 
 /// The order of the rows a transaction touches: the class of a mutation.
@@ -439,11 +444,49 @@ fn plan(mutation: Mutation) -> Result<Planned, ErrorBody> {
     if mutation.op == Op::CreateArtifact && !matches!(place, Place::Record(_) | Place::Artifact) {
         return Err(malformed(format!("{path} is not a place for an artifact")));
     }
+    if matches!(&place, Place::Record(collection) if collection == RECOVERY) {
+        check_recovery(&mutation, record.as_ref())?;
+    }
     Ok(Planned {
         mutation,
         place,
         record,
     })
+}
+
+/// The batch the recovery record at `path` belongs to, when `path` is one of the two recovery
+/// paths of a batch.
+fn recovery_batch(path: &str) -> Option<&str> {
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(RECOVERY), Some(kind), Some(name), None) if RECOVERY_KINDS.contains(&kind) => {
+            name.strip_suffix(".json").filter(|id| !id.is_empty())
+        }
+        _ => None,
+    }
+}
+
+/// Check a mutation of a recovery record: a create or a replace of an object whose `batch_id` is
+/// the batch of its path.
+fn check_recovery(
+    mutation: &Mutation,
+    record: Option<&Map<String, Value>>,
+) -> Result<(), ErrorBody> {
+    let path = &mutation.path;
+    if !matches!(mutation.op, Op::Create | Op::Replace) {
+        return Err(malformed(format!(
+            "{path} is a recovery record: it is created and replaced, never deleted"
+        )));
+    }
+    let named = record
+        .and_then(|record| record.get("batch_id"))
+        .and_then(Value::as_str);
+    if named.is_none() || named != recovery_batch(path) {
+        return Err(malformed(format!(
+            "the batch_id of the recovery record {path} must name the batch of its path"
+        )));
+    }
+    Ok(())
 }
 
 fn place_of(path: &str, target: Target) -> Result<Place, ErrorBody> {
@@ -461,6 +504,15 @@ fn place_of(path: &str, target: Target) -> Result<Place, ErrorBody> {
         Target::Typed { spec, id, .. } => Ok(Place::Typed(spec, id)),
         Target::QaLease(_) => Ok(Place::QaLease),
         Target::QaQueue { id, .. } => Ok(Place::QaQueue(id)),
+        Target::Record { collection, .. } if collection == RECOVERY => {
+            if recovery_batch(path).is_none() {
+                return Err(malformed(format!(
+                    "{path} is not a recovery record: recovery/hold/<batch_id>.json or \
+                     recovery/intent/<batch_id>.json"
+                )));
+            }
+            Ok(Place::Record(collection))
+        }
         Target::Record { collection, .. } => {
             free(&collection)?;
             Ok(Place::Record(collection))
@@ -479,6 +531,11 @@ fn batch_of(
     created: &BTreeMap<String, String>,
     tx: &Transaction<'_>,
 ) -> Result<Option<String>, ErrorBody> {
+    if let Place::Record(collection) = &planned.place
+        && collection == RECOVERY
+    {
+        return Ok(recovery_batch(&planned.mutation.path).map(str::to_owned));
+    }
     let Place::Typed(spec, id) = &planned.place else {
         return Ok(None);
     };
@@ -942,7 +999,30 @@ impl Applying<'_> {
         })
     }
 
+    /// A recovery record belongs to a batch the store holds, in this transaction.
+    fn require_batch(&self, item: &Planned) -> Result<(), ErrorBody> {
+        let Place::Record(collection) = &item.place else {
+            return Ok(());
+        };
+        let Some(batch) = recovery_batch(&item.mutation.path).filter(|_| collection == RECOVERY)
+        else {
+            return Ok(());
+        };
+        let held: Option<i64> = sqlite(
+            self.tx
+                .query_row("SELECT 1 FROM batch WHERE id = ?1", [batch], |row| {
+                    row.get(0)
+                })
+                .optional(),
+        )?;
+        match held {
+            Some(_) => Ok(()),
+            None => Err(not_found(&format!("batches/{batch}.json"))),
+        }
+    }
+
     fn apply(&mut self, item: &Planned) -> Result<Effect, ErrorBody> {
+        self.require_batch(item)?;
         let effect = match item.mutation.op {
             Op::Create | Op::CreateArtifact => self.create(item)?,
             Op::Replace => self.replace(item)?,

@@ -67,8 +67,9 @@ EXECUTION_STATES = ("launching", "running", "stopping", "exited", "lost", "unkno
 # adds ``state.write``, ``state.validate`` and the registry vocabularies of the operations table;
 # minor 2 adds ``execution.launch`` and ``execution.observe`` of the process supervisor (ADR 0022);
 # minor 3 adds ``container.observe``, ``container.objects`` and ``container.remove`` of the
-# container executor in the runtime (ADR 0022, section 4).
-PROTOCOL_VERSION = (1, 4)
+# container executor in the runtime (ADR 0022, section 4); minor 5 adds the writable recovery records
+# of a batch, the feature ``state.recovery`` (ADR 0026).
+PROTOCOL_VERSION = (1, 5)
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 MAX_SOCKET_PATH_BYTES = 100
 _FRAME_HEADER = struct.Struct(">I")

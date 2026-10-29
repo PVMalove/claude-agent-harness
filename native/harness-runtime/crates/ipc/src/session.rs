@@ -235,6 +235,8 @@ impl Session {
             features.push("state.write".to_owned());
             features.push("state.validate".to_owned());
             features.push("qa.lane.inspect".to_owned());
+            // The recovery records of a batch (ADR 0026): its operational hold and its intent.
+            features.push("state.recovery".to_owned());
             if supervisor::Supervisor::supported() {
                 features.extend(supervisor::FEATURES.map(str::to_owned));
             }
@@ -624,7 +626,7 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
-        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 4}));
+        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 5}));
         assert!(error.remedy.contains("update harness"));
         assert!(reply.close);
     }
@@ -861,6 +863,7 @@ mod tests {
             "state.write",
             "state.validate",
             "qa.lane.inspect",
+            "state.recovery",
         ];
         // The supervisor serves its operations where the platform supervises processes.
         if supervisor::Supervisor::supported() {
