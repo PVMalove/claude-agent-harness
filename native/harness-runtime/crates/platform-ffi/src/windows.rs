@@ -1,5 +1,13 @@
-//! Win32 calls behind a safe API. This is the only module of the workspace with `unsafe` code.
-//! Each `unsafe` block states why its pointers and handles are valid.
+//! Win32 calls behind a safe API. This is the only module of the workspace with `unsafe` code,
+//! together with its child module `job`. Each `unsafe` block states why its pointers and handles
+//! are valid.
+
+mod job;
+
+pub use job::{
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS, Job, JobAccess,
+    Process, ignore_ctrl_events, send_ctrl_break,
+};
 
 use std::ffi::{OsStr, c_void};
 use std::fs::File;
@@ -19,7 +27,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
     ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
-    GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT, SE_OBJECT_TYPE,
 };
 use windows_sys::Win32::Security::Cryptography::{
     BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
@@ -216,6 +224,12 @@ unsafe impl Sync for OwnerOnly {}
 impl OwnerOnly {
     /// Build the descriptor `D:P(A;;FA;;;<sid>)` for a SID string such as `S-1-5-21-1-2-3-1001`.
     pub fn for_user_sid(sid: &str) -> io::Result<Self> {
+        Self::with_rights(sid, "FA")
+    }
+
+    /// Build the descriptor `D:P(A;;<rights>;;;<sid>)`: `FA` for a file or a pipe, `GA` (all
+    /// rights of the object type) for a job object.
+    pub(crate) fn with_rights(sid: &str, rights: &str) -> io::Result<Self> {
         let well_formed = sid.starts_with("S-1-")
             && sid
                 .bytes()
@@ -226,7 +240,7 @@ impl OwnerOnly {
                 format!("not a SID string: {sid:?}"),
             ));
         }
-        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{sid})")
+        let sddl: Vec<u16> = format!("D:P(A;;{rights};;;{sid})")
             .encode_utf16()
             .chain(Some(0))
             .collect();
@@ -368,15 +382,16 @@ pub fn dacl_of_path(path: &Path) -> io::Result<Dacl> {
     dacl_of_descriptor(descriptor)
 }
 
-/// The DACL of the object behind an open file or pipe handle.
-fn dacl_of_handle(handle: HANDLE) -> io::Result<Dacl> {
+/// The DACL of the object behind an open handle: `SE_FILE_OBJECT` for a file or a pipe,
+/// `SE_KERNEL_OBJECT` for a job object.
+fn dacl_of_handle(handle: HANDLE, object_type: SE_OBJECT_TYPE) -> io::Result<Dacl> {
     let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
     // SAFETY: `handle` is a valid open handle; only the DACL and the descriptor are requested, and
     // the unused out pointers are null as the API allows.
     let status = unsafe {
         GetSecurityInfo(
             handle,
-            SE_FILE_OBJECT,
+            object_type,
             DACL_SECURITY_INFORMATION,
             null_mut(),
             null_mut(),
@@ -668,7 +683,7 @@ impl PipeListener {
 
     /// The DACL of the pipe, read back from the open instance.
     pub fn dacl(&self) -> io::Result<Dacl> {
-        dacl_of_handle(self.instance.as_raw_handle())
+        dacl_of_handle(self.instance.as_raw_handle(), SE_FILE_OBJECT)
     }
 
     /// Wait up to `timeout` for a client. `None` means that none came, so a caller can look at

@@ -328,3 +328,70 @@ Reconcile запускается при старте runtime, перед каж�
   `runtime_images`.
 - **Проверки.** Fedora, SELinux и rootless Podman подтверждены argv-матрицей и scripted-движком;
   живой smoke движка — #710.
+
+## Решения реализации #806
+
+**Принято оператором (2026-10-29).** Supervisor процессов на Windows (#806) реализует разделы 2,
+3 и 5 для Job Objects с отступлениями ниже. Контейнеры на Windows (Docker Desktop), одобрение
+политики hooks при запуске (#808) и полный `verify-windows` (#753) этот ticket не затрагивает;
+поведение на Linux не меняется.
+
+| Текст ADR | Решение #806 | Причина |
+|---|---|---|
+| §3: `CREATE_NEW_PROCESS_GROUP` для доставки `CTRL_BREAK` | Исполнение получает ещё и свою скрытую консоль (`CREATE_NO_WINDOW`); `CTRL_BREAK` шлёт короткий helper `harness-runtime ctrl-break` без консоли (`DETACHED_PROCESS`), который подключается к консоли живого участника job | `GenerateConsoleCtrlEvent` доходит только до процессов той же консоли. Общая консоль с runtime отдала бы исполнению Ctrl+Break оператора и закрытие окна терминала, а `AttachConsole` в самом runtime сломал бы его stderr. |
+| §3: `CTRL_BREAK`, затем `TerminateJobObject`; #805: отказ SIGTERM даёт `unknown` | Недоставленный `CTRL_BREAK` — факт `ctrl_break` (`delivered`, `no-member`, `failed` с `ctrl_break_error`), остановка продолжается `TerminateJobObject` с кодом 137; доказательство — пустой job и ушедший лидер; `term_sent_at` — время попытки | `TerminateJobObject` останавливает всех участников job и без `CTRL_BREAK`, а пустой job доказывает остановку. |
+| #805: усыновлённый процесс без кода выхода становится `lost` | Лидер, которого runtime держит открытым handle с того момента, когда он был жив, при пустом job даёт `exited` с кодом выхода и `source: process-handle` | Windows хранит код выхода, пока открыт handle процесса. |
+| §2: имя Job Object входит в идентичность | Имя хранится в `launch.job` intent и в receipt, а не в колонках идентичности; схема store 5 не меняется; `pgid` — pid лидера | Имя выводится из `operation_id`, поэтому новая колонка не нужна. |
+| §5: доказанное отсутствие — `lost` | Лидер ушёл (нет процесса, другое время создания или выход без удерживаемого handle) и имени job нет — `lost` с фактом `job: name-absent`, хотя участники могли пережить лидера | Временный объект ядра живёт по имени, только пока открыт хотя бы один handle. Без runtime и лидера имя пропадает, и job больше не найти. |
+| ADR 0021 §4, #805: intent усыновляется по метке окружения | Intent усыновляет самый ранний живой участник job по имени из intent; его потоки возобновляются | Окружение чужого процесса Windows отдаёт только через недокументированный разбор PEB, а участник job — заведомо процесс исполнения: breakaway запрещён. Runtime мог умереть до возобновления подвешенного лидера. |
+| §1: асинхронное ядро Tokio | Синхронные std-потоки, как в #805 | Runtime синхронный. |
+| §6: на Windows только Docker Desktop | Контейнеры и QA-прогоны на Windows не обслуживаются: `hello` перечисляет только `execution.launch` и `execution.observe`, `container.*` и `qa.*` дают `unknown_operation`, brief с `docker` отвергается `policy_denied` до intent | Контейнеры на Windows — отдельная задача. |
+
+Как работает реализация:
+
+- **Граница кода.** Общий цикл запуска, reconcile и остановки (`launch.rs`, `stop.rs`) один для
+  Linux и Windows; платформенный слой за cfg-границей: Linux — `linux.rs` и `process.rs`, Windows
+  — `windows.rs`. Весь `unsafe` лежит в модуле `windows` крейта `platform-ffi` и его дочернем
+  модуле `job`. Таблица наблюдения и имя job (`supervisor::job`) не делают системных вызовов и
+  проверяются тестами и на Linux.
+- **Запуск.** Шаг 2 идёт строго по порядку: `Job::create` с DACL только владельца
+  (`D:P(A;;GA;;;<SID>)`) и без лимитов, то есть без `KILL_ON_JOB_CLOSE` и breakaway; уже
+  существующее имя — отказ, чужой job не открывается как свой. Затем журналы с DACL только
+  владельца, процесс с `CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` и метками,
+  `AssignProcessToJobObject`, копия handle job в лидере только с правом `JOB_OBJECT_QUERY` и
+  возобновление потоков. Сбой между запуском и возобновлением завершает подвешенный процесс:
+  исполнение `lost`, операция `failed` с `engine_unavailable`, at-most-once, как в #805.
+- **Имя и права.** Имя — `Global\harness-runtime-execution-<operation_id>`: его находит runtime
+  из любой сессии того же пользователя. Runtime, который открывает job по имени, берёт права
+  `JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE`, helper — только `JOB_OBJECT_QUERY`. Копия handle в
+  лидере держит имя живым, пока жив лидер.
+- **Идентичность.** Receipt пишет pid, время создания процесса (FILETIME) и `pgid`, равный pid,
+  `"accounting": "job-object"` и имя job. Процесс с записанным pid, но с другим временем
+  создания исполнением не считается и сигнала не получает: `CTRL_BREAK` уходит только на консоль
+  проверенного участника job, а `TerminateJobObject` касается только участников job.
+- **Наблюдение.** Reconcile открывает job по имени из intent и смотрит на лидера по pid и
+  времени создания. Лидер жив и в job — `running`; жив вне job или при пустом job — `unknown`;
+  лидер ушёл, а участники живы — `running` до их выхода или до срока; пустой job — `exited` с
+  кодом удерживаемого handle или `lost`; ошибка ОС — `unknown` с удержанной арендой. Живого
+  усыновлённого лидера runtime держит открытым handle до терминального состояния строки.
+- **Остановка по сроку.** Runtime запускает helper `harness-runtime ctrl-break --job --group
+  --pid --created` и ждёт его до 10 секунд. Helper игнорирует консольные события, открывает job,
+  выбирает проверенного лидера или первого живого участника, подключается к его консоли и шлёт
+  `CTRL_BREAK_EVENT` записанной группе. Коды выхода helper: 0 — доставлено, 3 — нет живого
+  участника, 1 — не доставлено. Через `stop_grace_seconds` оставшихся участников завершает
+  `TerminateJobObject`; если job не опустел за 30 секунд, исход `unknown`. Затем одна транзакция
+  пишет `exited` с exit evidence (код выхода как беззнаковый DWORD, `signal: null`, источник,
+  время шагов, `ctrl_break`, размер и SHA-256 журналов) и освобождает аренду. Остановку, начатую
+  до рестарта, новый runtime доводит до конца: повторяет `CTRL_BREAK`, пока идёт grace, затем
+  `TerminateJobObject`.
+- **Проверки.** Задание CI `runtime-ipc-windows` запускает контрактные тесты `platform-ffi`
+  (лимиты и DACL job, жизнь имени по handle, возобновление, участие потомков, код выхода 259 из
+  handle), `supervisor` (запуск в job, идентичность, отказ ОС, чужое имя, отказ контейнера) и
+  `harness-runtime --test windows_supervisor`: `CTRL_BREAK` и `TerminateJobObject`, исполнение,
+  которое пережило убитый runtime, код выхода после рестарта, завершение начатой остановки,
+  усыновление без второго запуска, `lost` после intent и процесс с подделанной идентичностью,
+  который сигнала не получает. Не доказаны: Python seam 1 на Windows, рестарт в другой сессии
+  или под другим пользователем, захват имени чужим пользователем, настоящий pid reuse ОС, runtime
+  во внешнем job с `KILL_ON_JOB_CLOSE`, реальный worker под `CTRL_BREAK` и Windows ARM. Окно в
+  микросекунды между `CreateProcess` и `AssignProcessToJobObject` при гибели runtime оставляет
+  подвешенный процесс вне job: `PROC_THREAD_ATTRIBUTE_JOB_LIST` на стабильном std недоступен.

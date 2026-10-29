@@ -1,4 +1,5 @@
-//! The Linux launch, adoption and reconcile of the supervisor.
+//! The launch, adoption and reconcile of the supervisor. The process of an execution, its
+//! identity and the search for it after a restart come from the platform layer (`crate::os`).
 //!
 //! Serialisation: one mutex per operation id. A launch holds it from the intent to the receipt;
 //! reconcile, `execution.observe` and the watcher of a child take it too, and every row write is a
@@ -13,9 +14,7 @@
 //! `execution.launch:respond` (in the IPC server: the receipt is committed, the answer dropped).
 
 use std::collections::{HashMap, HashSet};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread;
@@ -30,8 +29,33 @@ use state::hooks;
 use state::identity::{self, Identity};
 use state::time::{iso_from_micros, iso_now, now_micros};
 
-use crate::Supervisor;
-use crate::process::{self, Spec};
+pub(crate) use crate::os::log_directory;
+use crate::{Supervisor, os};
+
+/// The label that names the operation id of a launch in the environment of its process.
+pub const LABEL_OPERATION: &str = "HARNESS_OPERATION_ID";
+/// The label that names the dispatch of a launch in the environment of its process.
+pub const LABEL_DISPATCH: &str = "HARNESS_DISPATCH_ID";
+
+/// What to start: the stored launch spec and the labels of the execution.
+#[derive(Debug)]
+pub struct Spec<'a> {
+    pub argv: &'a [String],
+    pub cwd: &'a Path,
+    pub operation_id: &'a str,
+    pub dispatch_id: &'a str,
+    pub stdout: &'a Path,
+    pub stderr: &'a Path,
+}
+
+/// What reconcile sees of an execution with a recorded identity, as the platform layer observes
+/// it: the state it means, the facts of the observation, and the exit evidence when the
+/// observation proves the exit.
+pub(crate) struct Observed {
+    pub(crate) to: ExecutionState,
+    pub(crate) facts: Value,
+    pub(crate) exit: Option<Value>,
+}
 
 /// The periodic reconcile when no execution pins its own interval.
 const DEFAULT_POLL_SECONDS: i64 = 1;
@@ -41,11 +65,16 @@ const DEFAULT_POLL_SECONDS: i64 = 1;
 pub(crate) struct Inner {
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Children spawned by this runtime whose receipt is not written yet.
-    children: Mutex<HashMap<String, Child>>,
+    children: Mutex<HashMap<String, os::Launched>>,
     /// Executions a thread of this runtime waits for or stops; reconcile leaves them to it.
     pub(crate) watched: Mutex<HashSet<String>>,
     /// The explicit stop of each QA run a thread of this runtime runs, by execution id.
+    #[cfg(target_os = "linux")]
     pub(crate) qa_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// The live leaders of adopted executions this runtime holds a handle to, by execution id:
+    /// their exit code stays readable after they end.
+    #[cfg(windows)]
+    pub(crate) held: Mutex<HashMap<String, os::Launched>>,
 }
 
 pub(crate) fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -198,14 +227,6 @@ fn container_of(brief: &Map<String, Value>) -> Option<(Value, Value)> {
     })
 }
 
-/// Create the log directory of an execution, private to the runtime's user.
-pub(crate) fn log_directory(dir: &Path) -> std::io::Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-}
-
 /// What a launch request finds in the store: the answer of an operation stored before, or a new
 /// launch.
 enum Found<'a> {
@@ -336,26 +357,45 @@ impl Supervisor {
             return self.launch_container(&mut connection, &admitted, plan, images);
         }
         let (stdout, stderr) = self.logs(&request.operation_id)?;
-        let launch = json!({
+        let mut launch = json!({
             "argv": admitted.spec["argv"],
             "cwd": admitted.spec["cwd"],
             "labels": {
-                process::LABEL_OPERATION: request.operation_id,
-                process::LABEL_DISPATCH: admitted.dispatch_id,
+                LABEL_OPERATION: request.operation_id,
+                LABEL_DISPATCH: admitted.dispatch_id,
             },
             "logs": {"stdout": stdout, "stderr": stderr},
         });
+        if let Some(fields) = launch.as_object_mut() {
+            fields.extend(os::launch_facts(&request.operation_id));
+        }
         let execution = self.intent(&mut connection, &admitted, &launch, None)?;
         hooks::reach_once("execution.launch:intent").map_err(|err| injected(&err))?;
         let child = self.start_process(&mut connection, &execution, &admitted)?;
-        let pid = i64::from(child.id());
+        let pid = os::pid(&child);
         guard(&self.inner.children).insert(execution.id.clone(), child);
         hooks::reach_once("execution.launch:launched").map_err(|err| injected(&err))?;
         self.receipt(&mut connection, &execution, pid, false, None)
     }
 
+    /// A container launch on a platform without containers: refused before the intent.
+    #[cfg(windows)]
+    #[allow(clippy::unused_self)]
+    fn launch_container(
+        self: &Arc<Self>,
+        _connection: &mut Connection,
+        _admitted: &Admitted<'_>,
+        _plan: &Value,
+        _images: &Value,
+    ) -> Result<Value, ErrorBody> {
+        Err(denied(
+            "a container execution runs only on Linux; nothing was written",
+        ))
+    }
+
     /// A container launch: step 1 without a write, the intent, the staged launch and the
     /// receipt. A failed staged launch is rolled back and the execution is `lost`.
+    #[cfg(target_os = "linux")]
     fn launch_container(
         self: &Arc<Self>,
         connection: &mut Connection,
@@ -506,7 +546,7 @@ impl Supervisor {
         connection: &mut Connection,
         execution: &Execution,
         admitted: &Admitted<'_>,
-    ) -> Result<Child, ErrorBody> {
+    ) -> Result<os::Launched, ErrorBody> {
         let (stdout, stderr) = self.logs(&execution.id)?;
         let argv: Vec<String> = admitted.spec["argv"]
             .as_array()
@@ -519,14 +559,17 @@ impl Supervisor {
             .unwrap_or_default();
         let cwd = PathBuf::from(admitted.spec["cwd"].as_str().unwrap_or_default());
         let spawned = log_directory(stdout.parent().unwrap_or(self.state()?)).and_then(|()| {
-            process::spawn(&Spec {
-                argv: &argv,
-                cwd: &cwd,
-                operation_id: &execution.id,
-                dispatch_id: &admitted.dispatch_id,
-                stdout: &stdout,
-                stderr: &stderr,
-            })
+            os::spawn(
+                &Spec {
+                    argv: &argv,
+                    cwd: &cwd,
+                    operation_id: &execution.id,
+                    dispatch_id: &admitted.dispatch_id,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                },
+                execution,
+            )
         });
         spawned.or_else(|err| {
             let error = ErrorBody::new(
@@ -558,7 +601,7 @@ impl Supervisor {
     ) -> Result<Value, ErrorBody> {
         let observer = identity::observer();
         // An adopted identity is the one the scan matched: a pid reused since is never recorded.
-        let (identity, pgid) = process::identity_of(pid, &observer)
+        let (identity, pgid) = os::identity_of(pid, &observer)
             .filter(|(identity, _)| scanned.is_none_or(|start| identity.start_time == start))
             .ok_or_else(|| store_busy("the identity of the launched process cannot be read yet"))?;
         let at = iso_now();
@@ -568,19 +611,23 @@ impl Supervisor {
         let current = executions::load(&tx, &execution.id)?
             .filter(|current| current.identity.is_none() && !is_terminal(current.state))
             .ok_or_else(|| store_busy("the execution changed before its receipt"))?;
-        let receipt = json!({
+        let mut receipt = json!({
             "execution_id": current.id,
             "dispatch_id": current.dispatch_id,
             "state": ExecutionState::Running.as_str(),
             "identity": identity.to_json(),
             "pgid": pgid,
-            "accounting": "process-group",
+            "accounting": os::ACCOUNTING,
             "launched_at": at,
             "execution_deadline": current.execution_deadline,
             "logs": current.launch.get("logs").cloned().unwrap_or(Value::Null),
             "adopted": adopted,
         });
-        executions::transition(
+        // The job object the intent named, where the platform runs the execution in one.
+        if let (Some(job), Some(fields)) = (current.launch.get("job"), receipt.as_object_mut()) {
+            fields.insert("job".to_owned(), job.clone());
+        }
+        let running = executions::transition(
             &tx,
             &current,
             ExecutionState::Running,
@@ -602,7 +649,7 @@ impl Supervisor {
         sql(tx.commit())?;
         let child = guard(&self.inner.children).remove(&current.id);
         if let Some(child) = child {
-            self.watch(&current.id, child, pgid, &current.execution_deadline);
+            self.watch(&running, child);
         }
         Ok(receipt)
     }
@@ -666,22 +713,27 @@ impl Supervisor {
         if is_terminal(execution.state) || self.is_watched(&execution.id) {
             return Ok(execution);
         }
+        // Containers and QA runs are served only on Linux.
+        #[cfg(windows)]
+        if execution.kind != executions::KIND_PROCESS {
+            return Ok(execution);
+        }
+        #[cfg(target_os = "linux")]
         if execution.kind == executions::KIND_CONTAINER {
             self.settle_container(connection, &execution)?;
             return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
         }
+        #[cfg(target_os = "linux")]
         if execution.kind == executions::KIND_QA {
             self.settle_qa(connection, &execution)?;
             return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
         }
         match &execution.identity {
             None => {
-                let own = guard(&self.inner.children)
-                    .get(&execution.id)
-                    .map(|child| i64::from(child.id()));
+                let own = guard(&self.inner.children).get(&execution.id).map(os::pid);
                 let found = own.map_or_else(
                     || {
-                        process::scan(&execution.id, writer_start(&execution))
+                        os::find(&execution)
                             .map(|found| found.map(|(pid, start)| (pid, Some(start))))
                     },
                     |pid| Ok(Some((pid, None))),
@@ -691,7 +743,7 @@ impl Supervisor {
                         self.receipt(connection, &execution, pid, true, scanned.as_deref())?;
                     }
                     Ok(None) => {
-                        let reason = "no labelled process; never relaunched";
+                        let reason = os::NOT_FOUND;
                         let error = ErrorBody::new(
                             ErrorCode::EngineUnavailable,
                             FailureDomain::Infrastructure,
@@ -721,26 +773,15 @@ impl Supervisor {
         Ok(executions::load(connection, &execution.id)?.unwrap_or(execution))
     }
 
-    /// Map the verdict on the recorded identity to a state and record a change of state.
+    /// Map the observation of the recorded identity to a state and record a change of state.
     fn observe_identity(
         self: &Arc<Self>,
         connection: &mut Connection,
         execution: &Execution,
         recorded: &Identity,
     ) -> Result<(), ErrorBody> {
-        let observer = identity::observer();
-        let verdict = identity::verdict(Some(recorded), &observer, &identity::probe(recorded.pid));
-        let to = match executions::observed(verdict, false) {
-            // A leader gone by itself ends its execution only with its group, as for a child of
-            // this runtime: a member that outlives it keeps the row `running` and the lease held,
-            // and a group that cannot be observed is `unknown`.
-            ExecutionState::Lost => match execution.pgid.map(crate::stop::outlived) {
-                Some(Ok(true)) => ExecutionState::Running,
-                Some(Err(_)) => ExecutionState::Unknown,
-                Some(Ok(false)) | None => ExecutionState::Lost,
-            },
-            other => other,
-        };
+        let observed = os::observe(self, execution, recorded);
+        let to = observed.to;
         // A process another runtime started, or the group that outlives it, is stopped at its
         // deadline from here, and a stop another runtime began is driven to its proof from here;
         // never one whose state is unknown.
@@ -755,14 +796,18 @@ impl Supervisor {
         if to == execution.state || !allowed(execution.state, to) {
             return Ok(());
         }
-        let observation = json!({"verdict": verdict.as_str(), "observed_at": iso_now()});
+        let mut observation = observed.facts.clone();
+        if let Some(fields) = observation.as_object_mut() {
+            fields.insert("observed_at".to_owned(), json!(iso_now()));
+        }
         Self::move_to(
             connection,
             execution,
             to,
             Change {
                 observation: Some(observation),
-                facts: json!({"verdict": verdict.as_str()}),
+                exit: observed.exit,
+                facts: observed.facts,
                 ..Change::default()
             },
         )
@@ -817,6 +862,7 @@ impl Supervisor {
                 interval = Some(interval.map_or(poll, |found: i64| found.min(poll)));
             }
         }
+        #[cfg(target_os = "linux")]
         self.finish_removals(&connection);
         interval
     }
@@ -841,27 +887,10 @@ impl Supervisor {
 /// The owner of the lease of an execution: this runtime process, by its identity.
 pub(crate) fn owner() -> Value {
     let pid = i64::from(std::process::id());
-    let identity = process::identity_of(pid, &identity::observer())
+    let identity = os::identity_of(pid, &identity::observer())
         .map(|(identity, _)| identity.to_json())
         .unwrap_or(Value::Null);
     json!({"kind": "harness-runtime", "identity": identity})
-}
-
-/// The start time, in clock ticks of this boot, of the runtime that wrote the intent of
-/// `execution`: no process of its launch started before it. `None` when the intent names no
-/// identity of this boot and PID namespace.
-fn writer_start(execution: &Execution) -> Option<u64> {
-    let writer = execution.lease_owner.get("identity")?;
-    let observer = identity::observer();
-    let here = |key: &str, value: Option<&String>| {
-        value.is_some_and(|value| writer.get(key).and_then(Value::as_str) == Some(value.as_str()))
-    };
-    if !(here("boot_id", observer.boot_id.as_ref())
-        && here("pid_namespace", observer.pid_namespace.as_ref()))
-    {
-        return None;
-    }
-    writer.get("start_time")?.as_str()?.parse().ok()
 }
 
 /// Take the mutex of an operation, waiting until the deadline of the request.

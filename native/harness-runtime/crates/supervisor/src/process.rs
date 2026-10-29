@@ -16,21 +16,7 @@ use std::process::{Child, Command, Stdio};
 
 use state::identity::{Identity, Observer};
 
-/// The label that names the operation id of a launch in the environment of its process.
-pub const LABEL_OPERATION: &str = "HARNESS_OPERATION_ID";
-/// The label that names the dispatch of a launch in the environment of its process.
-pub const LABEL_DISPATCH: &str = "HARNESS_DISPATCH_ID";
-
-/// What to start: the stored launch spec and the labels of the execution.
-#[derive(Debug)]
-pub struct Spec<'a> {
-    pub argv: &'a [String],
-    pub cwd: &'a Path,
-    pub operation_id: &'a str,
-    pub dispatch_id: &'a str,
-    pub stdout: &'a Path,
-    pub stderr: &'a Path,
-}
+pub use crate::launch::{LABEL_DISPATCH, LABEL_OPERATION, Spec};
 
 /// The fields of `/proc/<pid>/stat` the supervisor reads: the state (field 3), the process
 /// group (field 5) and the start time (field 22). The command name in parentheses may hold

@@ -1,6 +1,6 @@
 [package]
 name = "harness-runtime"
-description = "The harness runtime process: `harness-runtime serve`"
+description = "The harness runtime process: `harness-runtime serve` and the Windows ctrl-break helper"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
@@ -20,3 +20,6 @@ supervisor = { version = "0.1.0", path = "../supervisor" }
 
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+platform-ffi = { version = "0.1.0", path = "../platform-ffi" }
