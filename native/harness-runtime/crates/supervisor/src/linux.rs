@@ -23,7 +23,7 @@ use state::executions::{self, Execution};
 use state::identity::{self, Identity, Observer, Probe, Verdict};
 
 use crate::Supervisor;
-use crate::launch::Spec;
+use crate::launch::{Observed, Spec};
 use crate::process;
 use crate::stop::Seen;
 
@@ -88,14 +88,6 @@ fn writer_start(execution: &Execution) -> Option<u64> {
         return None;
     }
     writer.get("start_time")?.as_str()?.parse().ok()
-}
-
-/// What reconcile sees of an execution with a recorded identity: the state it means, the facts
-/// of the observation, and the exit evidence when the observation proves the exit.
-pub(crate) struct Observed {
-    pub(crate) to: ExecutionState,
-    pub(crate) facts: Value,
-    pub(crate) exit: Option<Value>,
 }
 
 /// Observe the recorded identity of `execution`. A leader gone by itself ends its execution only

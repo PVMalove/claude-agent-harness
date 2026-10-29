@@ -470,6 +470,7 @@ dependencies = [
  "contracts",
  "engine",
  "nix",
+ "platform-ffi",
  "qa",
  "rusqlite",
  "serde_json",

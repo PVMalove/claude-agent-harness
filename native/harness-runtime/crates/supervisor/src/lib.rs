@@ -15,6 +15,15 @@
 //! execution when the runtime ends. Other platforms build a stub that serves no execution
 //! operation; `hello` does not list them there.
 //!
+//! On Windows the same three steps start the execution suspended, as the root of a new process
+//! group with a hidden console of its own, inside a named job object derived from the operation id
+//! (`job::name`) and created without `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the leader gets its own
+//! handle to the job, so the name lives while the leader does. The identity is the pid and the
+//! creation time, the receipt names the job. A runtime after a restart opens the job by its name:
+//! it adopts the earliest member of the job of an intent, and observes a recorded leader and its
+//! job by the table of `job::outcome`. Windows serves `execution.launch` and `execution.observe`
+//! only; containers and QA runs stay on Linux.
+//!
 //! A brief whose `runtime_access` names the built-in `docker` extension runs as a `container`
 //! execution (ADR 0022, section 4): the runtime checks the plan's mounts against the engine
 //! sockets and its own paths, the environment names and the pinned images before the intent,
@@ -29,7 +38,8 @@
 
 #[cfg(target_os = "linux")]
 mod container;
-#[cfg(target_os = "linux")]
+pub mod job;
+#[cfg(any(target_os = "linux", windows))]
 mod launch;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -39,19 +49,32 @@ mod objects;
 pub mod process;
 #[cfg(target_os = "linux")]
 mod qa_run;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod stop;
+#[cfg(windows)]
+mod windows;
 
 // The platform layer behind the seam of `launch` and `stop`: the process of an execution, its
 // identity, the search for it after a restart and the signals of a stop.
 #[cfg(target_os = "linux")]
 use linux as os;
+#[cfg(windows)]
+use windows as os;
 
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// The operations the supervisor serves on Windows, as `hello` lists them.
+#[cfg(windows)]
+pub const FEATURES: [&str; 2] = ["execution.launch", "execution.observe"];
+
+/// The operations of a platform without a supervisor: none.
+#[cfg(not(any(target_os = "linux", windows)))]
+pub const FEATURES: [&str; 0] = [];
+
 /// The operations the supervisor serves, as `hello` lists them.
+#[cfg(target_os = "linux")]
 pub const FEATURES: [&str; 7] = [
     "execution.launch",
     "execution.observe",
@@ -78,7 +101,7 @@ pub struct Supervisor {
     runtime_paths: Vec<PathBuf>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     engines: Engines,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     inner: launch::Inner,
 }
 
@@ -107,7 +130,7 @@ impl Supervisor {
             repository: None,
             runtime_paths: Vec::new(),
             engines: Arc::new(engine::cli),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             inner: launch::Inner::default(),
         }
     }
@@ -134,11 +157,11 @@ impl Supervisor {
 
     /// Whether this platform supervises processes.
     pub const fn supported() -> bool {
-        cfg!(target_os = "linux")
+        cfg!(any(target_os = "linux", windows))
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use std::sync::atomic::AtomicBool;
 
 #[cfg(not(target_os = "linux"))]
@@ -159,15 +182,6 @@ impl Supervisor {
             ),
             "use an operation the hello features list names",
         )
-    }
-
-    /// `execution.launch`: not served on this platform.
-    ///
-    /// # Errors
-    /// Always `unknown_operation`.
-    pub fn launch(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
-        let _ = &self.state_dir;
-        Err(Self::unsupported(request))
     }
 
     /// `container.observe`: not served on this platform.
@@ -207,6 +221,18 @@ impl Supervisor {
     /// # Errors
     /// Always `unknown_operation`.
     pub fn qa_stop(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
+        Err(Self::unsupported(request))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+impl Supervisor {
+    /// `execution.launch`: not served on this platform.
+    ///
+    /// # Errors
+    /// Always `unknown_operation`.
+    pub fn launch(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
+        let _ = &self.state_dir;
         Err(Self::unsupported(request))
     }
 

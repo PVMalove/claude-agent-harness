@@ -140,23 +140,25 @@ impl Session {
             "state.write" => state_write(shared, &request, self.peer_pid),
             "qa.lane.inspect" => qa_lane_inspect(shared, &request),
             "state.validate" => state_validate(shared, &request),
-            "execution.launch" if supervised(shared) => {
+            "execution.launch" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.launch(&request))
             }
-            "execution.observe" if supervised(shared) => {
+            "execution.observe" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.observe(&request))
             }
-            "container.observe" if supervised(shared) => {
+            "container.observe" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.container_observe(&request))
             }
-            "container.objects" if supervised(shared) => {
+            "container.objects" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.container_objects(&request))
             }
-            "container.remove" if supervised(shared) => {
+            "container.remove" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.container_remove(&request))
             }
-            "qa.run" if supervised(shared) => answer(&request, shared.supervisor.qa_run(&request)),
-            "qa.stop" if supervised(shared) => {
+            "qa.run" if supervised(shared, &request.operation) => {
+                answer(&request, shared.supervisor.qa_run(&request))
+            }
+            "qa.stop" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.qa_stop(&request))
             }
             other => failure(
@@ -250,10 +252,13 @@ impl Session {
     }
 }
 
-/// Whether this runtime supervises the executions of its store: a platform with a supervisor
-/// and a state directory.
-fn supervised(shared: &Shared) -> bool {
-    supervisor::Supervisor::supported() && shared.state_dir.is_some()
+/// Whether this runtime serves the supervisor operation `operation` for its store: a platform
+/// whose supervisor lists it in the `hello` features, and a state directory. Windows serves
+/// `execution.*` only, so `container.*` and `qa.*` stay unknown operations there.
+fn supervised(shared: &Shared, operation: &str) -> bool {
+    supervisor::Supervisor::supported()
+        && shared.state_dir.is_some()
+        && supervisor::FEATURES.contains(&operation)
 }
 
 /// The reply of an execution operation (ADR 0022).

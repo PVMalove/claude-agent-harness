@@ -48,6 +48,15 @@ pub struct Spec<'a> {
     pub stderr: &'a Path,
 }
 
+/// What reconcile sees of an execution with a recorded identity, as the platform layer observes
+/// it: the state it means, the facts of the observation, and the exit evidence when the
+/// observation proves the exit.
+pub(crate) struct Observed {
+    pub(crate) to: ExecutionState,
+    pub(crate) facts: Value,
+    pub(crate) exit: Option<Value>,
+}
+
 /// The periodic reconcile when no execution pins its own interval.
 const DEFAULT_POLL_SECONDS: i64 = 1;
 
@@ -60,7 +69,12 @@ pub(crate) struct Inner {
     /// Executions a thread of this runtime waits for or stops; reconcile leaves them to it.
     pub(crate) watched: Mutex<HashSet<String>>,
     /// The explicit stop of each QA run a thread of this runtime runs, by execution id.
+    #[cfg(target_os = "linux")]
     pub(crate) qa_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// The live leaders of adopted executions this runtime holds a handle to, by execution id:
+    /// their exit code stays readable after they end.
+    #[cfg(windows)]
+    pub(crate) held: Mutex<HashMap<String, os::Launched>>,
 }
 
 pub(crate) fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -364,8 +378,24 @@ impl Supervisor {
         self.receipt(&mut connection, &execution, pid, false, None)
     }
 
+    /// A container launch on a platform without containers: refused before the intent.
+    #[cfg(windows)]
+    #[allow(clippy::unused_self)]
+    fn launch_container(
+        self: &Arc<Self>,
+        _connection: &mut Connection,
+        _admitted: &Admitted<'_>,
+        _plan: &Value,
+        _images: &Value,
+    ) -> Result<Value, ErrorBody> {
+        Err(denied(
+            "a container execution runs only on Linux; nothing was written",
+        ))
+    }
+
     /// A container launch: step 1 without a write, the intent, the staged launch and the
     /// receipt. A failed staged launch is rolled back and the execution is `lost`.
+    #[cfg(target_os = "linux")]
     fn launch_container(
         self: &Arc<Self>,
         connection: &mut Connection,
@@ -581,7 +611,7 @@ impl Supervisor {
         let current = executions::load(&tx, &execution.id)?
             .filter(|current| current.identity.is_none() && !is_terminal(current.state))
             .ok_or_else(|| store_busy("the execution changed before its receipt"))?;
-        let receipt = json!({
+        let mut receipt = json!({
             "execution_id": current.id,
             "dispatch_id": current.dispatch_id,
             "state": ExecutionState::Running.as_str(),
@@ -593,6 +623,10 @@ impl Supervisor {
             "logs": current.launch.get("logs").cloned().unwrap_or(Value::Null),
             "adopted": adopted,
         });
+        // The job object the intent named, where the platform runs the execution in one.
+        if let (Some(job), Some(fields)) = (current.launch.get("job"), receipt.as_object_mut()) {
+            fields.insert("job".to_owned(), job.clone());
+        }
         let running = executions::transition(
             &tx,
             &current,
@@ -679,10 +713,17 @@ impl Supervisor {
         if is_terminal(execution.state) || self.is_watched(&execution.id) {
             return Ok(execution);
         }
+        // Containers and QA runs are served only on Linux.
+        #[cfg(windows)]
+        if execution.kind != executions::KIND_PROCESS {
+            return Ok(execution);
+        }
+        #[cfg(target_os = "linux")]
         if execution.kind == executions::KIND_CONTAINER {
             self.settle_container(connection, &execution)?;
             return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
         }
+        #[cfg(target_os = "linux")]
         if execution.kind == executions::KIND_QA {
             self.settle_qa(connection, &execution)?;
             return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
@@ -821,6 +862,7 @@ impl Supervisor {
                 interval = Some(interval.map_or(poll, |found: i64| found.min(poll)));
             }
         }
+        #[cfg(target_os = "linux")]
         self.finish_removals(&connection);
         interval
     }
