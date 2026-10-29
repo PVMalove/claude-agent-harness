@@ -364,9 +364,11 @@ jobs:
         run: cargo test --locked
 
   runtime-ipc-windows:
-    # Light Windows job for the named pipe of the runtime (ADR 0021, section 2): it builds
-    # harness-runtime and runs only the IPC contract tests of both languages over the pipe. The full
-    # `verify-windows` job above stays off (#753); no step here runs the whole verification.
+    # Light Windows job for the named pipe of the runtime (ADR 0021, section 2) and its job object
+    # supervisor (ADR 0022, sections 2, 3 and 5): it builds harness-runtime and runs only the IPC
+    # contract tests of both languages over the pipe and the Rust contract tests of the job
+    # objects. The full `verify-windows` job above stays off (#753); no step here runs the whole
+    # verification.
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -397,6 +399,17 @@ jobs:
       - name: Rust IPC contract tests
         working-directory: native/harness-runtime
         run: cargo test --locked --no-fail-fast -p ipc -p platform-ffi
+      # The job objects of the supervisor: launch, identity, deadline stop with CTRL_BREAK and
+      # TerminateJobObject, and reconcile after a killed runtime. The executions are Python scripts
+      # of the `python` set up above. Each step runs after a successful build, whatever failed.
+      - name: Rust supervisor job object contract tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: native/harness-runtime
+        run: cargo test --locked --no-fail-fast -p supervisor
+      - name: Rust runtime restart and deadline stop tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: native/harness-runtime
+        run: cargo test --locked --no-fail-fast -p harness-runtime --test windows_supervisor
       - name: Python IPC contract tests
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
