@@ -260,6 +260,14 @@ def of_qa_stages(stages: object, *, repo: Path | None = None) -> Failure | None:
     if not isinstance(stages, Mapping):
         return None
     failed = stages.get("failed_stage")
+    # The runtime classified the ending of a containerised command: its domain is structured.
+    raw = stages.get("stages")
+    for entry in raw if isinstance(raw, list) else []:
+        domain = entry.get("domain") if isinstance(entry, Mapping) else None
+        if failed is not None and domain in {str(item) for item in FailureDomain}:
+            return structured(
+                FailureDomain(domain), f"stage {entry.get('stage')} domain={domain}", "qa_stages"
+            )
     if failed == "preparation":
         return _preparation(stages)
     if failed == "gate":

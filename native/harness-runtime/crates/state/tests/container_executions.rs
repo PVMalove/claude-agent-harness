@@ -1,4 +1,4 @@
-//! Schema version 5: an execution is a `process` or a `container` of an engine, and a running
+//! Schema version 5 and later: an execution is a `process` or a `container` of an engine, and a running
 //! container is proven by its container id instead of a host pid (ADR 0022, section 4).
 
 use contracts::ExecutionState;
@@ -44,6 +44,7 @@ fn container(
         &NewExecution {
             id: "op",
             dispatch_id: "d",
+            attempt: 1,
             kind: "container",
             engine,
             launch: &json!({"objects": [["container", "harness-d"]]}),
@@ -135,7 +136,7 @@ WHEN OLD.state <> NEW.state AND NOT (
 BEGIN SELECT RAISE(ABORT, 'the execution state does not allow this transition'); END;";
 
 #[test]
-fn a_store_of_version_four_keeps_its_process_executions_at_version_five() {
+fn a_store_of_version_four_keeps_its_process_executions_at_version_six() {
     let path = tempdir("v4").join("runtime.db");
     let mut old = create(&path).unwrap();
     old.execute_batch(
@@ -166,7 +167,7 @@ fn a_store_of_version_four_keeps_its_process_executions_at_version_five() {
     let version: i64 = old
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!((SCHEMA_VERSION, version), (5, 5));
+    assert_eq!((SCHEMA_VERSION, version), (6, 6));
     let kept = executions::load(&old, "op")
         .unwrap()
         .expect("the row is kept");
@@ -194,7 +195,7 @@ fn a_store_of_version_four_keeps_its_process_executions_at_version_five() {
     assert_eq!(action.0, "schema-migrate");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&action.1).unwrap(),
-        json!({"from": 4, "to": 5})
+        json!({"from": 4, "to": 6})
     );
     // The rebuilt table still refuses a transition out of a terminal state.
     old.execute(

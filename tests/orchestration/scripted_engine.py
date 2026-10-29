@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from harness.json_types import JsonObject as State
 
 STATE_ENV = "HARNESS_SCRIPTED_ENGINE_STATE"
+JUNIT_ENV = "HARNESS_STAGE_JUNIT_XML"
 WORKER_ID = "0123456789abcdef" * 4
 PROXY_ID = "89abcdef01234567" * 4
 NETWORK_ID = "fedcba9876543210" * 4
@@ -49,7 +51,7 @@ class ScriptedEngine:
         self.binary = binary
         self._write(
             {"binary": binary, "info": podman_info(), "images": {}, "objects": {},
-             "failures": {}, "calls": []}
+             "failures": {}, "calls": [], "runs": {}}
         )
         wrapper = self.bin / binary
         wrapper.write_text(
@@ -78,6 +80,23 @@ class ScriptedEngine:
 
     def removals(self) -> list[list[str]]:
         return [c for c in self.calls() if c[1] == "rm" or c[1:3] == ["network", "rm"]]
+
+    def script(
+        self, stage_id: str, *, stdout: str = "", stderr: str = "", exit_code: int = 0,
+        hang: bool = False, junit: str = "",
+    ) -> None:
+        """What the foreground ``run`` of the QA command ``stage_id`` prints and exits with; a
+        hanging one runs until a stop or a kill of its container ends it. ``junit`` is the JUnit
+        report the command writes where ``HARNESS_STAGE_JUNIT_XML`` of its ``run`` points."""
+        def add(state: State) -> None:
+            state["runs"][stage_id] = {
+                "stdout": stdout, "stderr": stderr, "exit_code": exit_code, "hang": hang,
+                "junit": junit,
+            }
+        self.update(add)
+
+    def runs(self) -> list[list[str]]:
+        return [call for call in self.calls() if call[1] == "run"]
 
     def add_container(self, container_id: str, name: str, labels: dict[str, str], status: str) -> None:
         def add(state: State) -> None:
@@ -205,6 +224,7 @@ def _answer(state: State, argv: list[str]) -> tuple[int, str, str]:
         if item is None:
             return 1, "", f"Error: no such container {argv[-1]}"
         item["status"] = "running" if verb == "start" else "exited"
+        item["signalled"] = verb
         return 0, argv[-1] + "\n", ""
     if kind == "network-connect":
         return 0, "", ""
@@ -221,8 +241,47 @@ def _answer(state: State, argv: list[str]) -> tuple[int, str, str]:
     return 1, "", f"the scripted engine has no answer for {argv}"
 
 
+def _run(path: Path, argv: list[str]) -> int:
+    """A foreground ``run --rm`` of a QA command: its scripted streams and exit code, or, for a
+    hanging one, the wait outside the lock until a stop (143) or a kill (137) of its name."""
+    name = argv[argv.index("--name") + 1]
+    with _locked(path) as state:
+        argv[0] = state["binary"]
+        state["calls"].append(argv)
+        script: State = next(
+            (value for key, value in state["runs"].items() if name.endswith(f"-{key}")), {}
+        )
+        state["objects"][name] = {
+            "kind": "container", "id": name, "name": name, "labels": _labels(argv),
+            "status": "running", "exit_code": 0,
+        }
+    junit = next(
+        (part.split("=", 1)[1] for part in argv if part.startswith(f"{JUNIT_ENV}=")), None
+    )
+    if junit is not None and script.get("junit"):
+        # The run root is bind-mounted at its own path: the report lands on the host as is.
+        Path(junit).write_text(script["junit"], encoding="utf-8")
+    sys.stdout.write(script.get("stdout", ""))
+    sys.stderr.write(script.get("stderr", ""))
+    sys.stdout.flush()
+    sys.stderr.flush()
+    code = int(script.get("exit_code", 0))
+    while script.get("hang"):
+        with _locked(path) as state:
+            item = state["objects"].get(name, {"status": "exited", "signalled": "kill"})
+        if item["status"] == "exited":
+            code = 143 if item.get("signalled") == "stop" else 137
+            break
+        time.sleep(0.05)
+    with _locked(path) as state:
+        state["objects"].pop(name, None)
+    return code
+
+
 def main() -> int:
     argv = [Path(sys.argv[0]).name, *sys.argv[1:]]
+    if argv[1:2] == ["run"]:
+        return _run(Path(os.environ[STATE_ENV]), argv)
     with _locked(Path(os.environ[STATE_ENV])) as state:
         argv[0] = state["binary"]
         state["calls"].append(argv)

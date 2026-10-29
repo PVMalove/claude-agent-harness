@@ -1367,7 +1367,12 @@ def _validate_dispatch(
     # The execution the runtime supervises (ADR 0022) is one optional field of an external brief
     # created on the runtime store.
     accepted |= {fields | {"execution"} for fields in set(accepted)}
-    if frozenset(dispatch) not in accepted:
+    fields = frozenset(dispatch)
+    # The QA execution a container QA brief pins (ADR 0022, section 3) only ever accompanies the
+    # image digests of its access plan.
+    if "runtime_images" in fields:
+        fields -= {"qa_execution"}
+    if fields not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
             remedy="the dispatch record schema is malformed -- "

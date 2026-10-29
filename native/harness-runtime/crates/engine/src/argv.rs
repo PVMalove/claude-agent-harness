@@ -1,5 +1,6 @@
 //! The exact engine argv of ADR 0025: a one-to-one port of `identity_argv`, `create_argv`,
-//! `proxy_argv`, `network_argv` and `mounts`, plus the operation and execution labels.
+//! `proxy_argv`, `network_argv` and `mounts`, plus the operation and execution labels, and the
+//! foreground `run --rm --init` of one QA command (ADR 0022, section 3).
 
 use std::path::Path;
 
@@ -57,6 +58,22 @@ pub fn proxy_name(dispatch_id: &str) -> String {
 /// The name of a dispatch's internal network.
 pub fn network_name(dispatch_id: &str) -> String {
     format!("{}-net", container_name(dispatch_id))
+}
+
+/// The name base of the objects of attempt `attempt` of a dispatch's QA run: its network is
+/// `<base>-net`, its sidecar `<base>-proxy` and the container of a command `<base>-<stage_id>`.
+pub fn qa_base(dispatch_id: &str, attempt: i64) -> String {
+    format!("{}-qa{attempt}", container_name(dispatch_id))
+}
+
+/// The sidecar of the objects named after `base`.
+pub fn sidecar_name(base: &str) -> String {
+    format!("{base}-proxy")
+}
+
+/// The internal network of the objects named after `base`.
+pub fn internal_network_name(base: &str) -> String {
+    format!("{base}-net")
 }
 
 fn owned(parts: &[&str]) -> Vec<String> {
@@ -186,22 +203,23 @@ pub fn create_argv(spec: &Spec<'_>) -> Vec<String> {
     argv
 }
 
-/// The `<engine> network create` of the dispatch's internal network: no route out of it.
-pub fn network_argv(spec: &Spec<'_>) -> Vec<String> {
+/// The `<engine> network create` of the internal network of the objects named after `base`: no
+/// route out of it.
+pub fn network_argv(spec: &Spec<'_>, base: &str) -> Vec<String> {
     let mut argv = owned(&[spec.plan.engine.as_str(), "network", "create", "--internal"]);
     argv.extend(labels_argv(spec.labels));
-    argv.push(network_name(&spec.labels.dispatch));
+    argv.push(internal_network_name(base));
     argv
 }
 
-/// The `<engine> create` of the egress sidecar from its pinned id, on the internal network.
-pub fn proxy_argv(spec: &Spec<'_>) -> Vec<String> {
+/// The `<engine> create` of the egress sidecar of the objects named after `base` from its pinned
+/// id, on their internal network.
+pub fn proxy_argv(spec: &Spec<'_>, base: &str) -> Vec<String> {
     let engine = spec.plan.engine;
-    let dispatch = &spec.labels.dispatch;
     let mut argv = owned(&[engine.as_str(), "create", "--pull", "never", "--name"]);
-    argv.push(proxy_name(dispatch));
+    argv.push(sidecar_name(base));
     argv.push("--network".to_owned());
-    argv.push(network_name(dispatch));
+    argv.push(internal_network_name(base));
     argv.extend(identity_argv(
         engine,
         spec.mode,
@@ -220,5 +238,114 @@ pub fn proxy_argv(spec: &Spec<'_>) -> Vec<String> {
     argv.push(format!("{ALLOWED_HOSTS_ENV}={}", spec.plan.hosts.join(",")));
     argv.extend(labels_argv(spec.labels));
     argv.push(spec.proxy_image_id.unwrap_or_default().to_owned());
+    argv
+}
+
+/// What runs one QA command: its words, given to `/bin/sh -c` for a command text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QaCommand {
+    /// An approved command text, run verbatim by `/bin/sh -c`.
+    Shell(String),
+    /// An approved argv: its first word is the entrypoint.
+    Argv(Vec<String>),
+}
+
+/// What every command of one QA run shares: the engine, the name base of its objects, whether
+/// its sidecar exists, the plan's environment names, the settings the runtime sets itself, the
+/// labels, the clean checkout, the narrowed mounts and the pinned image id.
+#[derive(Clone, Copy, Debug)]
+pub struct QaRun<'a> {
+    pub engine: Kind,
+    pub base: &'a str,
+    pub hosts: bool,
+    pub environment: &'a [String],
+    pub settings: &'a [(String, String)],
+    pub labels: &'a Labels,
+    pub workdir: &'a str,
+    pub mounts: &'a [(String, bool)],
+    pub image_id: &'a str,
+    pub user: HostUser,
+    pub mode: Mode,
+    pub selinux: bool,
+}
+
+/// The exact foreground `<engine> run --rm --init` of one QA command: the worker's identity,
+/// capabilities, home, environment and labels, the run's own network and mounts, and the pinned
+/// image id; never detached, privileged, restarted or given a volume.
+pub fn qa_run_argv(run: &QaRun<'_>, stage_id: &str, command: &QaCommand) -> Vec<String> {
+    let mut argv = owned(&[
+        run.engine.as_str(),
+        "run",
+        "--rm",
+        "--init",
+        "--pull",
+        "never",
+        "--name",
+    ]);
+    argv.push(format!("{}-{stage_id}", run.base));
+    argv.push("--network".to_owned());
+    argv.push(if run.hosts {
+        internal_network_name(run.base)
+    } else {
+        "none".to_owned()
+    });
+    argv.extend(identity_argv(
+        run.engine,
+        run.mode,
+        run.selinux,
+        run.user,
+        true,
+    ));
+    argv.extend(owned(&[
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+    ]));
+    argv.push(format!("{CONTAINER_HOME}:rw,exec,nosuid,nodev,mode=1777"));
+    for (name, value) in FIXED_ENV {
+        argv.extend(["--env".to_owned(), format!("{name}={value}")]);
+    }
+    if run.hosts {
+        let url = format!("http://{}:{PROXY_PORT}", sidecar_name(run.base));
+        for name in PROXY_URL_ENV_NAMES {
+            argv.extend(["--env".to_owned(), format!("{name}={url}")]);
+        }
+        for name in PROXY_BYPASS_ENV_NAMES {
+            argv.extend(["--env".to_owned(), format!("{name}={PROXY_BYPASS}")]);
+        }
+    }
+    for name in run.environment {
+        argv.extend(["--env".to_owned(), name.clone()]);
+    }
+    for (name, value) in run.settings {
+        argv.extend(["--env".to_owned(), format!("{name}={value}")]);
+    }
+    argv.extend(labels_argv(run.labels));
+    argv.push("--workdir".to_owned());
+    argv.push(run.workdir.to_owned());
+    let mut mounts = run.mounts.to_vec();
+    mounts.sort_by(|(a, _), (b, _)| {
+        (Path::new(a).components().count(), a).cmp(&(Path::new(b).components().count(), b))
+    });
+    for (path, write) in mounts {
+        argv.push("--mount".to_owned());
+        argv.push(format!(
+            "type=bind,source={path},target={path}{}",
+            if write { "" } else { ",readonly" }
+        ));
+    }
+    let (entrypoint, args) = match command {
+        QaCommand::Shell(text) => ("/bin/sh".to_owned(), vec!["-c".to_owned(), text.clone()]),
+        QaCommand::Argv(words) => words
+            .split_first()
+            .map_or_else(Default::default, |(first, rest)| {
+                (first.clone(), rest.to_vec())
+            }),
+    };
+    argv.extend(["--entrypoint".to_owned(), entrypoint]);
+    argv.push(run.image_id.to_owned());
+    argv.extend(args);
     argv
 }

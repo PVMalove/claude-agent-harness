@@ -258,6 +258,75 @@ impl Staged<'_> {
     }
 }
 
+/// The run-wide sidecar of a plan with hosts: its objects in creation order and the sidecar id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sidecar {
+    pub proxy_id: Option<String>,
+    pub objects: Vec<(ObjectKind, String)>,
+}
+
+/// The sidecar stage of the objects named after `base`, only when the plan has hosts: the
+/// internal network, the sidecar on it, the default network, its start.
+fn stage_sidecar(
+    staged: &mut Staged<'_>,
+    spec: &Spec<'_>,
+    base: &str,
+) -> Result<Option<String>, LaunchFailure> {
+    if spec.plan.hosts.is_empty() {
+        return Ok(None);
+    }
+    let engine = staged.engine;
+    let name = engine.kind().as_str();
+    staged.run(
+        &format!("{name} network create"),
+        &argv::network_argv(spec, base),
+        Some((ObjectKind::Network, argv::internal_network_name(base))),
+        false,
+    )?;
+    let id = staged.run(
+        &format!("{name} create (egress proxy)"),
+        &argv::proxy_argv(spec, base),
+        Some((ObjectKind::Container, argv::sidecar_name(base))),
+        true,
+    )?;
+    staged.run(
+        &format!("{name} network connect"),
+        &strings(&[
+            name,
+            "network",
+            "connect",
+            engine.kind().default_network(),
+            &id,
+        ]),
+        None,
+        false,
+    )?;
+    staged.run(
+        &format!("{name} start (egress proxy)"),
+        &strings(&[name, "start", &id]),
+        None,
+        false,
+    )?;
+    Ok(Some(id))
+}
+
+/// Create and start the sidecar and internal network of the objects named after `base` once,
+/// for a whole QA run; a plan without hosts creates nothing. Any failure removes what it created.
+///
+/// # Errors
+/// The first failed stage, after the rollback.
+pub fn sidecar(engine: &dyn Engine, spec: &Spec<'_>, base: &str) -> Result<Sidecar, LaunchFailure> {
+    let mut staged = Staged {
+        engine,
+        objects: Vec::new(),
+    };
+    let proxy_id = stage_sidecar(&mut staged, spec, base)?;
+    Ok(Sidecar {
+        proxy_id,
+        objects: staged.objects,
+    })
+}
+
 /// Create and start the dispatch's objects detached; any failure removes what it created.
 ///
 /// The sidecar comes first and only when the plan has hosts: its internal network, the sidecar
@@ -272,40 +341,7 @@ pub fn launch(engine: &dyn Engine, spec: &Spec<'_>) -> Result<Launched, LaunchFa
         engine,
         objects: Vec::new(),
     };
-    let mut proxy_id = None;
-    if !spec.plan.hosts.is_empty() {
-        staged.run(
-            &format!("{name} network create"),
-            &argv::network_argv(spec),
-            Some((ObjectKind::Network, argv::network_name(dispatch))),
-            false,
-        )?;
-        let id = staged.run(
-            &format!("{name} create (egress proxy)"),
-            &argv::proxy_argv(spec),
-            Some((ObjectKind::Container, argv::proxy_name(dispatch))),
-            true,
-        )?;
-        staged.run(
-            &format!("{name} network connect"),
-            &strings(&[
-                name,
-                "network",
-                "connect",
-                engine.kind().default_network(),
-                &id,
-            ]),
-            None,
-            false,
-        )?;
-        staged.run(
-            &format!("{name} start (egress proxy)"),
-            &strings(&[name, "start", &id]),
-            None,
-            false,
-        )?;
-        proxy_id = Some(id);
-    }
+    let proxy_id = stage_sidecar(&mut staged, spec, &argv::container_name(dispatch))?;
     let worker_id = staged.run(
         &format!("{name} create"),
         &argv::create_argv(spec),
@@ -481,6 +517,30 @@ fn listed_ids(engine: &dyn Engine, command: &[&str], filters: &[String]) -> Opti
     ok.then(|| output.split_whitespace().map(str::to_owned).collect())
 }
 
+/// The role an object name has among the objects of `dispatch`: its worker, sidecar and network,
+/// or the command containers, sidecar and network of a QA run `<worker>-qa<attempt>`.
+fn role_of(name: &str, dispatch: &str) -> Option<&'static str> {
+    let worker = argv::container_name(dispatch);
+    if name == worker {
+        return Some("worker");
+    }
+    if name == argv::proxy_name(dispatch) {
+        return Some("proxy");
+    }
+    if name == argv::network_name(dispatch) {
+        return Some("network");
+    }
+    let rest = name.strip_prefix(&worker)?.strip_prefix("-qa")?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let suffix = rest[digits..].strip_prefix('-')?;
+    match (digits, suffix) {
+        (0, _) | (_, "") => None,
+        (_, "proxy") => Some("proxy"),
+        (_, "net") => Some("network"),
+        _ => Some("worker"),
+    }
+}
+
 fn labelled(
     engine: &dyn Engine,
     kind: ObjectKind,
@@ -516,13 +576,7 @@ fn labelled(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim_start_matches('/');
-        let role = if name == argv::container_name(dispatch) {
-            "worker"
-        } else if name == argv::proxy_name(dispatch) {
-            "proxy"
-        } else if name == argv::network_name(dispatch) {
-            "network"
-        } else {
+        let Some(role) = role_of(name, dispatch) else {
             continue;
         };
         // The engine filter only narrows the search: every object is checked against its labels.

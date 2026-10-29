@@ -18,10 +18,12 @@ from enum import StrEnum
 from pathlib import Path
 
 from ..errors import INTERNAL_INVARIANT_REMEDY
+from . import container_executor
 from .core import git_utils
 from .core.constants import ACCESS_OPERATIONS
 from .core.utils import CoordinatorError, JsonObject
 from .runtime_access import (
+    qa_container,
     AccessError,
     RuntimeAccessStatus,
     resolve_plan,
@@ -324,7 +326,14 @@ def _mode_check(operation: str, plan: JsonObject) -> JsonObject:
             reason="the coordinator runs in its own inherited environment",
         )
         return entry
-    summary, _ = verify_plan(plan, "in-process")
+    # A container QA is proven by harness-runtime as the QA operation it runs in containers; Git,
+    # publish and a host QA run in the coordinator's own process.
+    transport = (
+        container_executor.QA_OPERATION_TRANSPORT
+        if operation == "qa" and qa_container(plan, "qa")
+        else "in-process"
+    )
+    summary, _ = verify_plan(plan, transport)
     if summary["status"] == RuntimeAccessStatus.VERIFIED:
         entry.update(
             state=AccessCheckState.VERIFIED,

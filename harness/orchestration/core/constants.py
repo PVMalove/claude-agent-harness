@@ -495,7 +495,10 @@ REPORT_OPTIONAL_FIELDS = {
 QA_STAGES_FIELDS = frozenset({"stages", "failed_stage", "code_checks_started"})
 QA_STAGES_OPTIONAL_FIELDS = frozenset({"diagnosis"})
 QA_STAGE_ENTRY_FIELDS = frozenset({"stage", "command", "result", "exit_code"})
-QA_STAGE_ENTRY_OPTIONAL_FIELDS = frozenset({"executed_command", "diagnostics"})
+QA_STAGE_ENTRY_OPTIONAL_FIELDS = frozenset({"executed_command", "diagnostics", "domain"})
+# The failure domains harness-runtime classifies the ending of a containerised QA command as
+# (ADR 0022, section 3); a stage entry names one only when its exit code is not its own result.
+QA_STAGE_DOMAINS = ("infrastructure", "tooling", "timeout", "cancelled", "unknown")
 # ``environment-probe`` and ``project-file-check`` stages exist only after a failed preparation stage:
 # they are the independent facts its diagnosis rests on.
 QA_PRIMARY_STAGE_NAMES = ("preparation", "gate")
@@ -628,6 +631,8 @@ DEFAULT_EXECUTION_POLICY = {
     # approval TTL, since an approval older than that would not authorise a new send either.
     "worker_execution_timeout_seconds": 14_400,
     "stop_grace_seconds": 30,
+    # The runtime stops one containerised QA command at this deadline (ADR 0022, section 3).
+    "qa_command_timeout_seconds": 3_600,
 }
 # The lifetime of a QA lease of the runtime store (ADR 0021, section 5): its owner renews it every
 # third of it, and the runtime checks the owner's liveness only after it expired. The runtime

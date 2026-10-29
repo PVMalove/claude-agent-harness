@@ -264,11 +264,12 @@ class LaunchUnsettled(CoordinatorError):
     """The runtime did not confirm a launch; a repeat of ``dispatch send`` never launches twice."""
 
 
-def execution_operation_id(dispatch: JsonObject) -> str:
-    """The deterministic operation id of the first launch of a supervised brief:
-    ``sha256([dispatch_id, brief_sha256, 1])`` in the canonical digest form (ADR 0021, section 4)."""
+def execution_operation_id(dispatch: JsonObject, attempt: int = 1) -> str:
+    """The deterministic operation id of an attempt of a supervised brief, the first launch by
+    default: ``sha256([dispatch_id, brief_sha256, attempt])`` in the canonical digest form
+    (ADR 0021, section 4); a QA rerun is a new attempt with a new id."""
     brief_sha256 = hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
-    key = _canonical([dispatch["dispatch_id"], brief_sha256, 1])
+    key = _canonical([dispatch["dispatch_id"], brief_sha256, attempt])
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
