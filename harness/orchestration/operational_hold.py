@@ -1,65 +1,91 @@
-"""Operational holds: a batch kept suspended in the runtime state store (issue #684).
+"""Operational holds: a batch held by its recovery record in the runtime store (ADR 0026).
 
-Unknown, missing, legacy-quarantined or incompatible system data never becomes a decision: the
-coordinator holds the batch in its runtime state record (``suspended``, failure step
-``hold:<reason>``) and raises attention on it, and every command that settles or decides the batch
+Unknown, missing or unreadable system data never becomes a decision: the coordinator holds the
+batch in its recovery record ``recovery/hold/<batch_id>.json`` (``operationalHold.v1``: state
+``held``, failure step ``hold:<reason>``), and every command that settles or decides the batch
 stops on the hold until ``recovery resume`` re-checks the cause and releases it.  A hold is
 operational state only: it writes no lifecycle record, decision or approval, and
-``needs_attention`` stays a flag of the batch.  A batch the ledger migration quarantined is held by
-the migration's own step and is never released here; a store record that cannot be read at all
-holds its batch without any write.
+``needs_attention`` stays a flag of the batch.  Python decides the hold; the Rust store writes it
+(``state.write``, create then replace under the revision of the row) in the store unit of the
+command that holds or releases it.  A hold record that cannot be read holds its batch without any
+write.  The file-ledger epoch keeps no hold: there ``current_hold`` reads nothing, and ``hold`` and
+``release`` refuse.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
-from harness.orchestration.core.runtime_state_contract import QUARANTINE_STEP
-from harness.orchestration.core.utils import CoordinatorError, JsonObject
-from harness.orchestration.runtime_intent import (
-    first_record,
-    mark_ready,
-    mark_reconciling,
-    next_revision,
-    write_next,
+from harness.gate_runner.gate_runner import sanitise
+from harness.orchestration.core import state_view
+from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
+from harness.orchestration.core.utils import CoordinatorError, JsonObject, _now
+from harness.orchestration.ledger.ledger_ops import (
+    _ledger_errors,
+    _read_store_record,
+    store_is_authority,
 )
-from harness.orchestration.runtime_state_store import (
-    RuntimeStateError,
-    RuntimeStateStore,
-    sanitize_detail,
-)
+from harness.orchestration.ledger.lifecycle import LifecycleLedger
 
+HOLD_CONTRACT = "operationalHold.v1"
+HOLD_DIRECTORY = "recovery/hold"
 HOLD_STEP_PREFIX = "hold:"
-# Why a batch is held; ``legacy-quarantine`` is the ledger migration's own quarantine step.
-HOLD_REASONS = (
-    "unknown-value",
-    "missing-value",
-    "legacy-quarantine",
-    "unreadable-record",
-    "runtime-compatibility",
-)
-# A quarantine keeps its evidence for a human: no recovery command releases it.
-PERMANENT_REASONS = frozenset({"legacy-quarantine"})
+HOLD_STATES = ("held", "released")
+# Why a batch is held.
+HOLD_REASONS = ("unknown-value", "missing-value", "unreadable-record")
 HOLD_REMEDY = (
     "run 'coordinator.py recovery status --batch {batch}' for the diagnostics, fix the cause, "
     "resolve its operational-hold attention with 'coordinator.py batch attention resolve "
     "--batch {batch}' when the batch needs attention, then run 'coordinator.py recovery resume "
     "--batch {batch}'; nothing was abandoned, retried or decided"
 )
-QUARANTINE_REMEDY = (
-    "run 'coordinator.py ledger inspect --batch {batch}' and 'ledger export --batch {batch}' to "
-    "read the quarantined evidence and escalate it to a human; no recovery command releases a "
-    "quarantine, and nothing was abandoned"
+UNREADABLE_REMEDY = (
+    "the hold record recovery/hold/{batch}.json does not verify, so no recovery command "
+    "releases it: run 'coordinator.py ledger validate --full' and escalate the record to a "
+    "human; nothing was abandoned, retried or decided"
 )
-INTERRUPTED = (
-    "the operation stopped before its store commit; recovery resume reconciles it"
+FILE_EPOCH_REMEDY = (
+    "run 'harness-runtime migrate' once, so the runtime store keeps the recovery records, then "
+    "repeat the command"
 )
+DETAIL_LIMIT = 240
+_ABSOLUTE_PATH = re.compile(r"(?<![\w.~-])(?:[A-Za-z]:[\\/]|[\\/])[^\s'\"]*")
+
+
+def sanitize_detail(text: str) -> str:
+    """Secrets masked, absolute paths dropped and length bounded; a fixed point of itself."""
+    cleaned = _ABSOLUTE_PATH.sub("<path>", sanitise(text)).strip()
+    return cleaned[:DETAIL_LIMIT].strip()
+
+
+class OperationalHoldError(CoordinatorError):
+    """The refusal of an action on a held batch: its failure code, its step and the evidence."""
+
+    def __init__(
+        self,
+        code: str,
+        step: str,
+        message: str,
+        *,
+        remedy: str,
+        diagnostics: JsonObject | None = None,
+    ) -> None:
+        super().__init__(message, remedy=remedy)
+        self.code = code
+        self.step = step
+        self.diagnostics: JsonObject = dict(diagnostics or {})
+
+
+class UnreadableHold(ValueError):
+    """A hold record outside ``operationalHold.v1``: it holds its batch and is never rewritten."""
 
 
 @dataclass(frozen=True)
 class Hold:
-    """One active hold: its reason, the failure the store keeps and its durable revision
-    (``None`` when the store record cannot be read)."""
+    """One active hold: its reason, the failure its record keeps and the revision of the record
+    in the store (``None`` when the record cannot be read)."""
 
     batch_id: str
     reason: str
@@ -71,13 +97,11 @@ class Hold:
     @property
     def releasable(self) -> bool:
         """Whether ``recovery resume`` may release it once its cause is gone."""
-        return self.reason not in PERMANENT_REASONS and self.revision is not None
+        return self.revision is not None
 
     @property
     def remedy(self) -> str:
-        template = (
-            QUARANTINE_REMEDY if self.reason in PERMANENT_REASONS else HOLD_REMEDY
-        )
+        template = HOLD_REMEDY if self.releasable else UNREADABLE_REMEDY
         return template.format(batch=self.batch_id)
 
     def to_dict(self) -> JsonObject:
@@ -92,14 +116,18 @@ class Hold:
             "remedy": self.remedy,
         }
 
-    def error(self) -> RuntimeStateError:
+    def error(self) -> OperationalHoldError:
         """The refusal every command that would act on the held batch raises."""
-        return RuntimeStateError(
+        return OperationalHoldError(
             self.code,
             self.step,
             f"batch {self.batch_id} is held ({self.reason}): {self.message}",
             remedy=self.remedy,
-            durable_revision=self.revision,
+            diagnostics={
+                "batch_id": self.batch_id,
+                "reason": self.reason,
+                "revision": self.revision,
+            },
         )
 
 
@@ -107,15 +135,11 @@ def step_for(reason: str) -> str:
     """The failure step that keeps a hold of ``reason``."""
     if reason not in HOLD_REASONS:
         raise ValueError(f"unknown operational hold reason {reason!r}")
-    if reason == "legacy-quarantine":
-        return QUARANTINE_STEP
     return HOLD_STEP_PREFIX + reason
 
 
 def reason_of(step: object) -> str | None:
     """The hold reason a failure step names, or ``None`` for any other failure."""
-    if step == QUARANTINE_STEP:
-        return "legacy-quarantine"
     if isinstance(step, str) and step.startswith(HOLD_STEP_PREFIX):
         reason = step.removeprefix(HOLD_STEP_PREFIX)
         return reason if reason in HOLD_REASONS else None
@@ -123,107 +147,157 @@ def reason_of(step: object) -> str | None:
 
 
 def failure_code(reason: str) -> str:
-    """The runtime failure code a hold of ``reason`` records."""
-    if reason == "runtime-compatibility":
-        return "runtime-compatibility"
+    """The failure code a hold of ``reason`` records."""
+    step_for(reason)
     return "integrity-failure"
 
 
-def of_record(batch_id: str, record: JsonObject) -> Hold | None:
-    """The hold a valid store record keeps, ``None`` when it keeps none."""
-    failure = record["failure"]
-    if record["state"] != "suspended" or failure is None:
+def of_record(batch_id: str, record: JsonObject, revision: int | None) -> Hold | None:
+    """The hold a record of the store keeps, ``None`` when it keeps none.
+
+    A record outside ``operationalHold.v1`` raises ``UnreadableHold``: it is never read with
+    defaults filled in."""
+    failure = record.get("failure")
+    if (
+        record.get("contract") != HOLD_CONTRACT
+        or record.get("batch_id") != batch_id
+        or record.get("state") not in HOLD_STATES
+        or not isinstance(record.get("updated_at"), str)
+    ):
+        raise UnreadableHold(
+            f"recovery/hold/{batch_id}.json is not an {HOLD_CONTRACT} record of the batch"
+        )
+    if record["state"] == "released":
+        if failure is not None:
+            raise UnreadableHold(f"the released hold of {batch_id} keeps a failure")
         return None
+    if not isinstance(failure, dict) or not all(
+        isinstance(failure.get(key), str) for key in ("code", "step", "message")
+    ):
+        raise UnreadableHold(f"the hold of {batch_id} names no failure code, step and message")
     reason = reason_of(failure["step"])
     if reason is None:
-        return None
+        raise UnreadableHold(f"the hold of {batch_id} names no hold reason: {failure['step']!r}")
     return Hold(
         batch_id,
         reason,
         str(failure["code"]),
         str(failure["step"]),
         str(failure["message"]),
-        int(record["revision"]),
+        revision,
     )
 
 
-def current_hold(store: RuntimeStateStore, batch_id: str) -> Hold | None:
-    """The active hold of ``batch_id``; a store record that cannot be read holds it too."""
+def hold_relative(batch_id: str) -> str:
+    """The path of the hold record of ``batch_id`` in the store."""
+    return f"{HOLD_DIRECTORY}/{batch_id}.json"
+
+
+def current_hold(root: Path, batch_id: str) -> Hold | None:
+    """The active hold of ``batch_id``; a hold record that cannot be read holds it too.
+
+    In the file-ledger epoch there is no hold and nothing is read."""
+    if not store_is_authority(root):
+        return None
+    record, revision = _read_store_record(root, hold_relative(batch_id))
+    if record is None:
+        return None
     try:
-        record = store.read(batch_id)
-    except RuntimeStateError as exc:
+        return of_record(batch_id, record, revision)
+    except UnreadableHold as exc:
+        reason = "unreadable-record"
         return Hold(
             batch_id,
-            "unreadable-record",
-            exc.code,
-            exc.step,
-            str(exc.diagnostics.get("detail") or exc.code),
+            reason,
+            failure_code(reason),
+            step_for(reason),
+            sanitize_detail(str(exc)),
             None,
         )
-    return None if record is None else of_record(batch_id, record)
 
 
-def require_no_hold(store: RuntimeStateStore, batch_id: str) -> None:
+def require_no_hold(root: Path, batch_id: str) -> None:
     """Refuse an action on a held batch, with the recovery route as its remedy."""
-    held = current_hold(store, batch_id)
+    held = current_hold(root, batch_id)
     if held is not None:
         raise held.error()
 
 
-def hold(
-    store: RuntimeStateStore, batch_id: str, reason: str, detail: str
-) -> Hold | None:
-    """Hold ``batch_id`` for ``reason`` and return the hold now on disk.
+def _ledger(root: Path) -> LifecycleLedger:
+    """The ledger whose store unit writes the hold; only the runtime store keeps one."""
+    if not store_is_authority(root):
+        raise CoordinatorError(
+            "the file ledger keeps no operational hold: the runtime store writes it",
+            remedy=FILE_EPOCH_REMEDY,
+        )
+    unit = state_view.current_unit()
+    if unit is None or unit.view.root != root:
+        raise CoordinatorError(
+            "an operational hold is written only inside the store unit of a command",
+            remedy="hold or release the batch inside the command's _ledger_lock block",
+        )
+    return LifecycleLedger(root)
 
-    A repeated hold adds no revision, a quarantine keeps its own step and a completed record is
-    never held (``None``).  A store record that cannot be read cannot be written: it raises."""
+
+def _write(root: Path, batch_id: str, record: JsonObject, exists: bool) -> None:
+    ledger = _ledger(root)
+    path = ledger.records_root() / hold_relative(batch_id)
+    with _ledger_errors():
+        if exists:
+            ledger.replace(path, record)
+        else:
+            ledger.write_immutable(path, record)
+
+
+def hold(root: Path, batch_id: str, reason: str, detail: str) -> Hold | None:
+    """Hold ``batch_id`` for ``reason`` in the caller's store unit and return the hold it staged.
+
+    A repeated hold of the same failure adds no revision and a terminal batch is never held
+    (``None``).  A hold record that cannot be read cannot be written: it raises its refusal."""
     failure: JsonObject = {
         "code": failure_code(reason),
         "step": step_for(reason),
         "message": sanitize_detail(detail) or reason,
     }
-    record = store.read(batch_id) or first_record(store, batch_id)
-    if record["state"] == "completed":
+    _ledger(root)
+    batch, _ = _read_store_record(root, f"batches/{batch_id}.json")
+    if batch is not None and batch.get("state") in TERMINAL_BATCH_STATES:
         return None
-    existing = of_record(batch_id, record)
-    if existing is not None and (
-        existing.reason in PERMANENT_REASONS or record["failure"] == failure
-    ):
+    existing = current_hold(root, batch_id)
+    if existing is not None and not existing.releasable:
+        raise existing.error()
+    stored, revision = _read_store_record(root, hold_relative(batch_id))
+    if existing is not None and stored is not None and stored["failure"] == failure:
         return existing
-    held = next_revision(record, state="suspended", failure=failure)
-    write_next(store, record, held)
-    return of_record(batch_id, held)
+    record: JsonObject = {
+        "contract": HOLD_CONTRACT,
+        "batch_id": batch_id,
+        "state": "held",
+        "failure": failure,
+        "updated_at": _now(),
+    }
+    _write(root, batch_id, record, stored is not None)
+    return of_record(batch_id, record, 1 if revision is None else revision + 1)
 
 
-def release(store: RuntimeStateStore, batch_id: str) -> JsonObject | None:
-    """Release a releasable hold and return the record now on disk; without a hold the record
-    is returned unchanged.
-
-    An idle record returns to ``ready``.  One with an unfinished operation stays ``suspended`` as
-    an interrupted operation, so the reconciliation of ``settle`` finishes or stops on it."""
-    held = current_hold(store, batch_id)
+def release(root: Path, batch_id: str) -> JsonObject | None:
+    """Release a releasable hold in the caller's store unit and return the record it staged;
+    without a hold the stored record is returned unchanged."""
+    _ledger(root)
+    held = current_hold(root, batch_id)
     if held is None:
-        return store.read(batch_id)
+        return _read_store_record(root, hold_relative(batch_id))[0]
     if not held.releasable:
         raise CoordinatorError(
             f"the {held.reason} hold of {batch_id} is not released by a recovery command",
             remedy=held.remedy,
         )
-    record = store.read(batch_id)
-    if record is None:
-        raise CoordinatorError(
-            f"the hold of {batch_id} has no store record",
-            remedy=held.remedy,
-        )
-    operation = record["operation"]
-    if operation is not None and operation["phase"] != "committed":
-        interrupted = next_revision(
-            record,
-            failure={
-                "code": "execution-failure",
-                "step": "reconcile:detect",
-                "message": INTERRUPTED,
-            },
-        )
-        return write_next(store, record, interrupted)
-    return mark_ready(store, mark_reconciling(store, record, interrupted=INTERRUPTED))
+    record: JsonObject = {
+        "contract": HOLD_CONTRACT,
+        "batch_id": batch_id,
+        "state": "released",
+        "failure": None,
+        "updated_at": _now(),
+    }
+    _write(root, batch_id, record, True)
+    return record

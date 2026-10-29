@@ -11,10 +11,15 @@ received values and a suggestion, so a console or a CI log shows them without pa
 * ``skip`` hides one allowlisted advisory for one session; a fatal diagnostic is never skipped;
 * ``abort`` records that the operator left recovery: it abandons no batch, stops no worker and
   cleans no worktree;
-* ``resume`` (``recovery_commands``) reconciles the batch and releases its hold.
+* ``resume`` (``recovery_commands``) re-checks the batch, releases its hold and reacts to the
+  observed execution of its open dispatches.
 
 Every action except ``skip`` records its durable intent before it runs, so a console that is
-cancelled, reaches end of input or is interrupted shows the same status after a restart.  Nothing
+cancelled, reaches end of input or is interrupted shows the same status after a restart.  The hold
+and the intent are recovery records of the runtime store (``recovery/hold/<batch_id>.json``,
+``recovery/intent/<batch_id>.json``, ADR 0026): Python decides them, the Rust store writes them
+through ``state.write``, and the file-ledger epoch keeps neither, so there every command refuses
+with the ``harness-runtime migrate`` remedy.  Nothing
 here reads standard input, waits for a terminal or imports a UI toolkit.  An exception that is not
 a refusal is never shown as a configuration problem: it is an ``internal-error`` diagnostic with a
 correlation ID.
@@ -25,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -37,7 +43,7 @@ from harness.configuration import Bundle, bundle_diff, read_config_bundle
 from harness.configuration_store import ConfigurationStore, json_bytes
 from harness.diagnostics import Diagnostic, pointer, safe_value
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
-from harness.orchestration import extensions, operational_hold, runtime_compatibility
+from harness.orchestration import operational_hold
 from harness.orchestration.config_boundary import inspect_configuration
 from harness.orchestration.core.constants import (
     LIVE_DISPATCH_STATES,
@@ -51,16 +57,25 @@ from harness.orchestration.core.utils import (
     _now,
     _silent_seconds,
 )
+from harness.orchestration.ledger.ledger_ops import (
+    LedgerBusyError,
+    _ledger_errors,
+    _ledger_lock,
+    _read_store_record,
+    read_state,
+    store_is_authority,
+)
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
-from harness.orchestration.runtime_reconcile import settle
-from harness.orchestration.runtime_state_store import (
-    RuntimeStateError,
-    RuntimeStateStore,
+from harness.orchestration.operational_hold import (
+    FILE_EPOCH_REMEDY,
+    OperationalHoldError,
     sanitize_detail,
 )
+from harness.orchestration.runtime_client import PROTOCOL_VERSION, RuntimeClientError
 
 RECOVERY_CONTRACT = "recoveryStatus.v1"
 INTENT_CONTRACT = "recoveryIntent.v1"
+INTENT_DIRECTORY = "recovery/intent"
 ACTIONS = ("fix", "reload", "resume", "skip", "abort")
 # The reconciliation checks, in the order they run.
 CHECKS = (
@@ -98,17 +113,20 @@ DIAGNOSTIC_CODES = (
 OUTCOMES = ("done", "refused")
 INTENT_STATUSES = ("pending", "done", "refused", "interrupted", "aborted")
 # The closed allowlist of advisories ``skip`` may hide for one session.
-ADVISORIES = ("config-normalized", "unconfirmed-contract")
-# The runtime failure codes a refusal keeps as its diagnostic code.
-_FAILURE_CODES = {
-    "runtime-compatibility": "runtime-compatibility",
-    "ambiguous-effect": "ambiguous-effect",
-    "concurrency-conflict": "concurrency-conflict",
-    "storage-unavailable": "storage-unavailable",
-    "state-persist-failed": "storage-unavailable",
-    "internal-error": "internal-error",
-    "config-invalid": "config-invalid",
+ADVISORIES = ("config-normalized",)
+# The diagnostic code of each error code of the runtime protocol (ADR 0021, section 3).
+_RUNTIME_CODES = {
+    "runtime_unavailable": "storage-unavailable",
+    "store_busy": "storage-unavailable",
+    "revision_conflict": "concurrency-conflict",
+    "idempotency_conflict": "concurrency-conflict",
+    "invariant_violation": "integrity-failure",
+    "not_found": "integrity-failure",
+    "protocol_unsupported": "runtime-compatibility",
+    "internal": "internal-error",
 }
+# The features of the runtime hello that recovery reads and writes through.
+RECOVERY_FEATURES = ("state.read", "state.write", "state.recovery")
 
 
 @dataclass(frozen=True)
@@ -189,12 +207,18 @@ class RecoveryDiagnostic:
 
     @classmethod
     def from_error(cls, check: str, exc: HarnessError) -> RecoveryDiagnostic:
-        """A refusal of the core, kept with its own remedy; never a configuration typo."""
-        code = (
-            _FAILURE_CODES.get(exc.code, "integrity-failure")
-            if isinstance(exc, RuntimeStateError)
-            else "integrity-failure"
-        )
+        """A refusal of the core or the runtime, kept with its own remedy; never a
+        configuration typo."""
+        if isinstance(exc, RuntimeClientError):
+            code = _RUNTIME_CODES.get(exc.code, "integrity-failure")
+        elif isinstance(exc, RecoveryInternalError):
+            code = "internal-error"
+        elif isinstance(exc, OperationalHoldError) and exc.code in DIAGNOSTIC_CODES:
+            code = exc.code
+        elif isinstance(exc, LedgerBusyError):
+            code = "storage-unavailable"
+        else:
+            code = "integrity-failure"
         return cls(code, check, exc.message, remedy=exc.remedy)
 
 
@@ -242,35 +266,60 @@ class RecoveryInterrupted(CoordinatorError):
     """The operator cancelled, reached end of input or interrupted an action; its intent says so."""
 
 
-class RecoveryInternalError(RuntimeStateError):
-    """An exception that is not a refusal: an internal invariant, never a configuration typo."""
+class RecoveryInternalError(CoordinatorError):
+    """An exception that is not a refusal: an internal invariant, never a configuration typo.
+    It keeps the failure code, the step and the diagnostics of the action."""
 
     def __init__(self, action: str, exc: BaseException, correlation_id: str) -> None:
         detail = sanitize_detail(f"{type(exc).__name__}: {exc}") or type(exc).__name__
         super().__init__(
-            "internal-error",
-            f"recovery-{action}",
-            detail,
+            f"recovery {action} hit an internal invariant violation (correlation "
+            f"{correlation_id}): {detail}; nothing was decided on it",
             remedy=f"{INTERNAL_INVARIANT_REMEDY}; correlation {correlation_id}",
         )
-        self.message = (
-            f"recovery {action} hit an internal invariant violation (correlation "
-            f"{correlation_id}): {detail}; nothing was decided on it"
-        )
-        self.args = (self.message,)
+        self.code = "internal-error"
+        self.step = f"recovery-{action}"
         self.correlation_id = correlation_id
-        self.diagnostics["correlation_id"] = correlation_id
-        self.diagnostics["internal_invariant"] = True
+        self.diagnostics: JsonObject = {
+            "detail": detail,
+            "correlation_id": correlation_id,
+            "internal_invariant": True,
+        }
 
 
 # -- durable intent ------------------------------------------------------------------------------
+
+
+def intent_relative(batch_id: str) -> str:
+    """The path of the recovery intent of ``batch_id`` in the store."""
+    return f"{INTENT_DIRECTORY}/{batch_id}.json"
+
+
+def _write_intent(repo: Path, root: Path, record: JsonObject, *, own: str | None) -> None:
+    """Write ``record`` as the intent of its batch in a store unit of its own.
+
+    ``own`` is the correlation ID a finish expects to find: an intent another action wrote since
+    is never overwritten by this one."""
+    batch_id = str(record["batch_id"])
+    ledger = LifecycleLedger(root)
+    with _ledger_lock(ledger):
+        stored, _ = _read_store_record(root, intent_relative(batch_id))
+        if own is not None and (stored is None or stored.get("correlation_id") != own):
+            return
+        path = ledger.records_root() / intent_relative(batch_id)
+        with _ledger_errors():
+            if stored is None:
+                ledger.write_immutable(path, record)
+            else:
+                ledger.replace(path, record)
 
 
 @dataclass
 class Intent:
     """The durable record of one action: written before it runs, finished after it."""
 
-    store: RuntimeStateStore
+    repo: Path
+    root: Path
     record: JsonObject
 
     def finish(self, status: str, outcome: str | None, detail: str | None) -> None:
@@ -284,21 +333,86 @@ class Intent:
                 "updated_at": _now(),
             }
         )
-        self.store.write_recovery_intent(self.record["batch_id"], self.record)
+        _write_intent(
+            self.repo, self.root, self.record, own=str(self.record["correlation_id"])
+        )
+
+
+def runtime_hello(repo: Path) -> JsonObject:
+    """What the runtime of ``repo`` answers in ``hello``: its protocol, store and features."""
+    from harness.orchestration.runtime_client import RuntimeClient
+
+    reply = RuntimeClient(repo).call(
+        "status", operation_id=f"recovery.status-{uuid.uuid4().hex}", timeout_seconds=30.0
+    )
+    features = reply.hello.get("features")
+    return {
+        "protocol": reply.hello.get("protocol"),
+        "server_version": reply.hello.get("server_version"),
+        "store_id": reply.hello.get("store_id"),
+        "features": list(features) if isinstance(features, list) else [],
+    }
+
+
+def runtime_problems(hello: Mapping[str, object]) -> list[str]:
+    """Why the runtime of ``hello`` cannot keep the recovery records; empty when it can."""
+    problems = []
+    protocol = hello.get("protocol")
+    expected = {"major": PROTOCOL_VERSION[0], "minor": PROTOCOL_VERSION[1]}
+    if protocol != expected:
+        problems.append(f"the runtime speaks protocol {protocol!r}, recovery needs {expected!r}")
+    if not hello.get("store_id"):
+        problems.append("the runtime serves no store")
+    features = hello.get("features")
+    missing = [
+        name
+        for name in RECOVERY_FEATURES
+        if not isinstance(features, list) or name not in features
+    ]
+    if missing:
+        problems.append(f"the runtime lacks the features {', '.join(missing)}")
+    return problems
+
+
+def _require_recovery_store(repo: Path, root: Path, batch_id: str) -> None:
+    """An action that writes an intent needs the runtime-store epoch, a runtime that keeps the
+    recovery records and the batch's row in the store."""
+    if not store_is_authority(root):
+        raise CoordinatorError(
+            "recovery runs on the runtime store; this repository is in the file-ledger epoch",
+            remedy=FILE_EPOCH_REMEDY,
+        )
+    problems = runtime_problems(runtime_hello(repo))
+    if problems:
+        raise CoordinatorError(
+            f"the runtime cannot keep the recovery records: {'; '.join(problems)}",
+            remedy="update harness-runtime to the version of this harness and restart it "
+            "with 'harness-runtime serve', then repeat the command",
+        )
+    with read_state(LifecycleLedger(root), repo):
+        batch, _ = _read_store_record(root, f"batches/{batch_id}.json")
+    if batch is None:
+        raise CoordinatorError(
+            f"the runtime store holds no batch {batch_id}",
+            remedy="name a batch that 'coordinator.py batch status' lists",
+        )
 
 
 @contextmanager
-def tracked(store: RuntimeStateStore, batch_id: str, action: str) -> Iterator[Intent]:
+def tracked(repo: Path, root: Path, batch_id: str, action: str) -> Iterator[Intent]:
     """Record the intent of ``action`` as pending, run it and record how it ended.
 
     A refusal ends ``refused``; cancel, end of input or an interrupt ends ``interrupted`` and is
     raised as a refusal; any other exception ends ``refused`` as an internal error with a
-    correlation ID.  The caller finishes a normal run with its outcome."""
+    correlation ID.  The caller finishes a normal run with its outcome.  Each write of the intent
+    is a store unit of its own, so it is kept whatever the action does next."""
     if action not in ACTIONS:
         raise ValueError(f"unknown recovery action {action!r}")
+    _require_recovery_store(repo, root, batch_id)
     moment = _now()
     intent = Intent(
-        store,
+        repo,
+        root,
         {
             "contract": INTENT_CONTRACT,
             "batch_id": batch_id,
@@ -311,7 +425,7 @@ def tracked(store: RuntimeStateStore, batch_id: str, action: str) -> Iterator[In
             "correlation_id": str(uuid.uuid4()),
         },
     )
-    store.write_recovery_intent(batch_id, intent.record)
+    _write_intent(repo, root, intent.record, own=None)
     try:
         yield intent
     except (KeyboardInterrupt, EOFError, asyncio.CancelledError) as exc:
@@ -332,12 +446,14 @@ def tracked(store: RuntimeStateStore, batch_id: str, action: str) -> Iterator[In
         intent.finish("done", "done", None)
 
 
-def read_intent(store: RuntimeStateStore, batch_id: str) -> JsonObject | None:
+def read_intent(root: Path, batch_id: str) -> JsonObject | None:
     """The persisted intent a restarted console shows; an unreadable one is shown as such."""
-    try:
-        return store.read_recovery_intent(batch_id)
-    except RuntimeStateError as exc:
-        return {"contract": INTENT_CONTRACT, "unreadable": exc.code}
+    record, _ = _read_store_record(root, intent_relative(batch_id))
+    if record is None:
+        return None
+    if record.get("contract") != INTENT_CONTRACT or record.get("batch_id") != batch_id:
+        return {"contract": INTENT_CONTRACT, "unreadable": "integrity-failure"}
+    return record
 
 
 # -- the survey ----------------------------------------------------------------------------------
@@ -351,27 +467,6 @@ def open_entries(batch: JsonObject) -> list[JsonObject]:
     return [entry for entry in active_dispatches(batch) if not _settled(entry)]
 
 
-def config_declarations(config: Mapping[str, object]) -> JsonObject:
-    """The compatibility of every runtime assignment and selected extension of ``config``."""
-    declarations: list[runtime_compatibility.Declaration] = []
-    plans = config.get("assignment_plans")
-    for role, plan in (plans if isinstance(plans, dict) else {}).items():
-        if not isinstance(plan, dict):
-            continue
-        runtimes = plan.get("runtimes")
-        transport = str(plan.get("transport", "in-process"))
-        for runtime in runtimes if isinstance(runtimes, dict) else {}:
-            declaration = runtime_compatibility.assignment_declaration(
-                config, str(role), str(runtime), transport
-            )
-            if declaration is not None:
-                declarations.append(declaration)
-    declarations += runtime_compatibility.extension_declarations(
-        extensions.selected(config)
-    )
-    return runtime_compatibility.evidence(declarations)
-
-
 class Survey:
     """The read-only reconciliation checks of one batch; ``resume`` acts on their result."""
 
@@ -382,8 +477,7 @@ class Survey:
         self.checks: dict[str, CheckResult] = {
             name: CheckResult(name) for name in CHECKS
         }
-        self.store: RuntimeStateStore | None = None
-        self.record: JsonObject | None = None
+        self.hello: JsonObject | None = None
         self.hold: operational_hold.Hold | None = None
         self.batch: JsonObject | None = None
         self.config: JsonObject | None = None
@@ -453,40 +547,29 @@ class Survey:
             check.add(RecoveryDiagnostic.from_error("config", exc), status="refused")
 
     def _store(self) -> None:
+        """The runtime hello and the hold record of the batch: whether the store holds it."""
         check = self.checks["store"]
         try:
-            self.store = RuntimeStateStore(self.repo, self.root)
-            self.record = self.store.read(self.batch_id)
-        except RuntimeStateError as exc:
+            self.hello = runtime_hello(self.repo)
+            self.hold = operational_hold.current_hold(self.root, self.batch_id)
+            _, revision = _read_store_record(
+                self.root, operational_hold.hold_relative(self.batch_id)
+            )
+        except HarnessError as exc:
             check.add(RecoveryDiagnostic.from_error("store", exc), status="refused")
-            if self.store is not None:
-                self.hold = operational_hold.current_hold(self.store, self.batch_id)
             return
-        self.hold = operational_hold.current_hold(self.store, self.batch_id)
-        record = self.record
-        if record is not None:
-            operation = record["operation"]
-            check.evidence = {
-                "state": record["state"],
-                "revision": record["revision"],
-                "failure": record["failure"],
-                "operation": None
-                if operation is None
-                else {
-                    "kind": operation["kind"],
-                    "phase": operation["phase"],
-                    "effect": operation["effect"]["state"],
-                },
-            }
+        check.evidence = {
+            "store_id": self.hello["store_id"],
+            "hold_revision": revision,
+            "hold": None if self.hold is None else self.hold.reason,
+        }
         if self.hold is None:
             return
         held = self.hold
         diagnostic = RecoveryDiagnostic(
-            "runtime-compatibility"
-            if held.reason == "runtime-compatibility"
-            else "integrity-failure",
+            "integrity-failure",
             "store",
-            f"the runtime state store holds the batch ({held.reason}): {held.message}",
+            f"the runtime store holds the batch ({held.reason}): {held.message}",
             remedy=held.remedy,
             severity="error",
         )
@@ -508,11 +591,7 @@ class Survey:
         }
 
     def _batch(self) -> None:
-        from harness.orchestration.ledger.ledger_admin import batch_inspection
-        from harness.orchestration.ledger.ledger_ops import (
-            LedgerUnmigratedError,
-            _load_batch,
-        )
+        from harness.orchestration.ledger.ledger_ops import _load_batch
         from harness.orchestration.workflow.history import _validate_batch_integrity
 
         check = self.checks["batch"]
@@ -520,18 +599,31 @@ class Survey:
             batch = _load_batch(self.root, self.batch_id)
             _validate_batch_integrity(self.root, batch)
         except HarnessError as exc:
-            self.hold_reason = (
-                "unknown-value"
-                if isinstance(exc, LedgerUnmigratedError)
-                else "unreadable-record"
-            )
             check.add(RecoveryDiagnostic.from_error("batch", exc), status="refused")
-            check.evidence = batch_inspection(self.repo, self.root, self.batch_id)
+            check.evidence = self._batch_row()
+            if check.evidence["present"]:
+                self.hold_reason = hold_reason_of(exc)
+                check.evidence["hold_reason"] = self.hold_reason
             return
         self.batch = batch
         check.evidence = {
             "state": batch["state"],
             "next_action": batch.get("next_action"),
+        }
+
+    def _batch_row(self) -> JsonObject:
+        """What the store holds for the batch, when the strict read refuses it."""
+        try:
+            row, revision = _read_store_record(self.root, f"batches/{self.batch_id}.json")
+        except HarnessError as exc:
+            return {"present": None, "error": sanitize_detail(exc.message)}
+        if row is None:
+            return {"present": False}
+        state = row.get("state")
+        return {
+            "present": True,
+            "revision": revision,
+            "state": state if isinstance(state, str) else None,
         }
 
     def _lifecycle(self) -> None:
@@ -725,90 +817,85 @@ class Survey:
         check.evidence = {"pinned": pinned}
 
     def _compatibility(self) -> None:
+        """The runtime this coordinator talks to keeps the recovery records: the protocol, the
+        store and the features of its hello."""
         check = self.checks["compatibility"]
-        results: JsonObject = {}
-        for _, dispatch in self._briefs():
-            if self.checks["snapshot"].status == "refused":
-                break
-            try:
-                results[dispatch["dispatch_id"]] = runtime_compatibility.require_brief(
-                    self.config or {}, dispatch, step="recovery"
-                )
-            except runtime_compatibility.RuntimeCompatibilityError as exc:
-                results[dispatch["dispatch_id"]] = exc.evidence
-                check.add(
-                    RecoveryDiagnostic(
-                        "runtime-compatibility",
-                        "compatibility",
-                        exc.message,
-                        remedy=exc.remedy,
-                        expected=runtime_compatibility.dispatch_contract(dispatch),
-                        received=[
-                            item.declared
-                            for item in exc.declarations
-                            if item.status != "compatible"
-                        ],
-                    ),
-                    status="refused",
-                )
-            except HarnessError as exc:
-                check.add(
-                    RecoveryDiagnostic.from_error("compatibility", exc),
-                    status="refused",
-                )
-        if self.config is not None:
-            current = config_declarations(self.config)
-            results["current_config"] = current
-            if not current["compatible"]:
-                check.add(
-                    RecoveryDiagnostic(
-                        "runtime-compatibility",
-                        "compatibility",
-                        "the current configuration declares an incompatible runtime or "
-                        "extension for the next transition",
-                        remedy="declare a supported system_fields_contract, then run "
-                        "'recovery reload'",
-                        expected=list(runtime_compatibility.SUPPORTED_CONTRACTS),
-                    ),
-                    status="refused",
-                )
-        check.evidence = results
-
-    def _operation(self) -> None:
-        check = self.checks["operation"]
-        record = self.record
-        operation = None if record is None else record["operation"]
-        if operation is None or operation["phase"] == "committed":
+        if self.hello is None:
+            self._skip("compatibility", "the runtime hello is not readable")
             return
-        check.evidence = {
-            "kind": operation["kind"],
-            "phase": operation["phase"],
-            "effect": operation["effect"]["state"],
-        }
-        check.detail = (
-            "an unfinished operation: resume reconciles it from its durable intent and never "
-            "repeats a confirmed step or a hand-off"
-        )
-        if operation["effect"]["state"] == "unknown":
+        check.evidence = dict(self.hello)
+        problems = runtime_problems(self.hello)
+        if problems:
             check.add(
                 RecoveryDiagnostic(
-                    "ambiguous-effect",
-                    "operation",
-                    f"the {operation['kind']} may have started a worker: resume asks its "
-                    "adapter or provider and stops when nothing proves the outcome",
-                    remedy="stop the worker, or let its adapter answer observe; a live or "
-                    "unproved worker is never started a second time",
-                    severity="warning",
+                    "runtime-compatibility",
+                    "compatibility",
+                    f"the runtime cannot keep the recovery records: {'; '.join(problems)}",
+                    remedy="update harness-runtime to the version of this harness and restart "
+                    "it, then run 'recovery reload'",
+                    expected={
+                        "protocol": {
+                            "major": PROTOCOL_VERSION[0],
+                            "minor": PROTOCOL_VERSION[1],
+                        },
+                        "features": list(RECOVERY_FEATURES),
+                    },
+                    received={
+                        "protocol": self.hello.get("protocol"),
+                        "features": self.hello.get("features"),
+                    },
                 ),
+                status="refused",
             )
-        check.set("pending")
+
+    def _operation(self) -> None:
+        """The observed execution of every open supervised dispatch: an ended one is the
+        reaction resume applies, an unknown one an effect nothing proves."""
+        from harness.orchestration.workflow import execution_reaction
+        from harness.orchestration.workflow.delivery import observed_execution
+
+        check = self.checks["operation"]
+        if self.batch is None:
+            return
+        observed: list[JsonObject] = []
+        try:
+            for entry, dispatch in self._briefs():
+                if not execution_reaction.supervised(self.root, dispatch):
+                    continue
+                execution = observed_execution(self.repo, entry["dispatch_id"])
+                state = None if execution is None else execution.get("state")
+                observed.append({"dispatch_id": entry["dispatch_id"], "execution": state})
+                if state == "unknown":
+                    check.add(
+                        RecoveryDiagnostic(
+                            "ambiguous-effect",
+                            "operation",
+                            f"the runtime does not know whether the worker of "
+                            f"{entry['dispatch_id']} runs: resume refuses instead of starting "
+                            "a second one",
+                            remedy="stop the worker, or wait until the runtime observes it "
+                            "again; a live or unproved worker is never started a second time",
+                            severity="warning",
+                        ),
+                        status="pending",
+                    )
+                elif state is not None and (
+                    state not in execution_reaction.UNSETTLED_EXECUTION_STATES
+                ):
+                    check.detail = (
+                        "an ended execution: resume applies the reaction of the observed exit"
+                    )
+                    check.set("pending")
+        except HarnessError as exc:
+            check.add(RecoveryDiagnostic.from_error("operation", exc), status="refused")
+        check.evidence = {"executions": observed}
 
     def _liveness(self) -> None:
         from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
 
         check = self.checks["liveness"]
         live = []
-        for entry, dispatch in self._briefs():
+        for entry, _ in self._briefs():
             status = _load_dispatch_status(self.root, entry["dispatch_id"])
             if status.get("state") not in LIVE_DISPATCH_STATES:
                 continue
@@ -825,20 +912,6 @@ class Survey:
                     severity="warning",
                 )
             )
-            if "contract_self_report" not in status and status.get("model_self_report"):
-                check.add(
-                    RecoveryDiagnostic(
-                        "runtime-compatibility",
-                        "liveness",
-                        f"the worker of {entry['dispatch_id']} did not confirm its "
-                        "systemFields contract",
-                        remedy="the next session confirms it with dispatch self-report "
-                        "--system-fields-contract",
-                        expected=runtime_compatibility.dispatch_contract(dispatch),
-                        severity="warning",
-                        advisory="unconfirmed-contract",
-                    )
-                )
         check.evidence = {"live": live}
 
     def _attention(self) -> None:
@@ -933,9 +1006,7 @@ class Survey:
             "diagnostics": [item.to_dict() for item in visible],
             "skipped_advisories": sorted(hidden),
             "actions": self.actions(visible),
-            "intent": None
-            if self.store is None
-            else read_intent(self.store, self.batch_id),
+            "intent": read_intent(self.root, self.batch_id),
             "next": self.next_step(),
         }
 
@@ -1010,6 +1081,20 @@ class Survey:
         return None
 
 
+_UNKNOWN_VALUE = re.compile(r"\binvalid \w+ value '")
+_MISSING_VALUE = re.compile(r"\binvalid \w+ value None\b|\bmissing\b|\brequires?\b")
+
+
+def hold_reason_of(exc: HarnessError) -> str:
+    """The hold reason of a strict-read refusal of the batch record: a value the registry does
+    not list, a value that is absent, or a record that does not read at all."""
+    if _UNKNOWN_VALUE.search(exc.message):
+        return "unknown-value"
+    if _MISSING_VALUE.search(exc.message):
+        return "missing-value"
+    return "unreadable-record"
+
+
 def stopped_route(batch: JsonObject) -> str | None:
     from harness.orchestration.workflow import recovery
 
@@ -1035,33 +1120,35 @@ def lifecycle_view(batch: JsonObject) -> JsonObject:
 # -- actions -------------------------------------------------------------------------------------
 
 
-def _store(repo: Path, root: Path, batch_id: str) -> RuntimeStateStore:
-    store = RuntimeStateStore(repo, root)
-    store.path(batch_id)
-    return store
+def _require_store_epoch(root: Path) -> None:
+    if not store_is_authority(root):
+        raise CoordinatorError(
+            "recovery runs on the runtime store; this repository is in the file-ledger epoch",
+            remedy=FILE_EPOCH_REMEDY,
+        )
 
 
 def status(
     repo: Path, root: Path, batch_id: str, *, session: RecoverySession | None = None
 ) -> JsonObject:
     """The read-only recovery status of ``batch_id``: it takes no lock and writes nothing."""
-    return Survey(repo, root, batch_id).run().document(session)
+    _require_store_epoch(root)
+    with read_state(LifecycleLedger(root), repo):
+        return Survey(repo, root, batch_id).run().document(session)
 
 
 def reload(repo: Path, root: Path, batch_id: str) -> JsonObject:
-    """Re-read and validate the current configuration; never starts a worker."""
-    with tracked(_store(repo, root, batch_id), batch_id, "reload") as intent:
+    """Re-read and validate the current configuration and the runtime hello; never starts a
+    worker."""
+    with tracked(repo, root, batch_id, "reload") as intent:
         survey = Survey(repo, root, batch_id)
         survey._config()
         check = survey.checks["config"]
-        compatibility = (
-            None if survey.config is None else config_declarations(survey.config)
-        )
-        refused = check.status == "refused" or not (
-            compatibility is None or compatibility["compatible"]
-        )
+        hello = runtime_hello(repo)
+        problems = runtime_problems(hello)
+        refused = check.status == "refused" or bool(problems)
         outcome = "refused" if refused else "done"
-        intent.finish(outcome, outcome, None)
+        intent.finish(outcome, outcome, "; ".join(problems) or None)
         return {
             "contract": RECOVERY_CONTRACT,
             "action": "reload",
@@ -1069,7 +1156,7 @@ def reload(repo: Path, root: Path, batch_id: str) -> JsonObject:
             "outcome": outcome,
             "config": check.evidence,
             "diagnostics": [item.to_dict() for item in check.diagnostics],
-            "runtime_compatibility": compatibility,
+            "runtime": {**hello, "compatible": not problems, "problems": problems},
             "worker_started": False,
             "next": {"command": f"recovery resume --batch {batch_id}"}
             if outcome == "done"
@@ -1082,7 +1169,7 @@ def reload(repo: Path, root: Path, batch_id: str) -> JsonObject:
 def fix(repo: Path, root: Path, batch_id: str, *, apply: bool = False) -> JsonObject:
     """Preview, or with ``apply`` write through the configuration transaction, the safe
     normalization of the current configuration; nothing is resumed."""
-    with tracked(_store(repo, root, batch_id), batch_id, "fix") as intent:
+    with tracked(repo, root, batch_id, "fix") as intent:
         survey = Survey(repo, root, batch_id)
         survey._config()
         check = survey.checks["config"]
@@ -1160,12 +1247,13 @@ def skip(
 def abort(repo: Path, root: Path, batch_id: str) -> JsonObject:
     """Record that the operator left recovery and flush that intent; the batch, its workers
     and its worktree stay exactly as they are."""
-    store = _store(repo, root, batch_id)
-    with tracked(store, batch_id, "abort") as intent:
+    with tracked(repo, root, batch_id, "abort") as intent:
         intent.finish("aborted", "done", "the operator left recovery")
     survey = Survey(repo, root, batch_id)
-    survey._store()
-    survey._batch()
+    with read_state(LifecycleLedger(root), repo):
+        survey._store()
+        survey._batch()
+        intent_record = read_intent(root, batch_id)
     return {
         "contract": RECOVERY_CONTRACT,
         "action": "abort",
@@ -1176,7 +1264,7 @@ def abort(repo: Path, root: Path, batch_id: str) -> JsonObject:
         "abandoned": False,
         "worker_stopped": False,
         "worktree_cleaned": False,
-        "intent": read_intent(store, batch_id),
+        "intent": intent_record,
     }
 
 
@@ -1201,21 +1289,19 @@ def resume(
     *,
     approval: Mapping[str, str] | None = None,
 ) -> JsonObject:
-    """Reconcile ``batch_id`` and release its hold, then continue a recorded stop through the
-    audited ``batch resume-stop`` when ``approval`` names the human, the time and the note.
+    """Re-check ``batch_id``, release its hold and react to the observed execution of its open
+    dispatches, then continue a recorded stop through the audited ``batch resume-stop`` when
+    ``approval`` names the human, the time and the note.
 
-    Under the ledger lock every check of ``status`` runs first.  A refused check changes
-    nothing, except that a batch the ledger cannot read is held in the store.  Otherwise the
-    hold is released and ``settle`` finishes an unfinished operation from its durable intent: a
-    confirmed step is never repeated, and an ambiguous effect or a live worker stops instead of
-    starting a second one.  No approval, attention, budget, auto stop or terminal refusal is
-    changed, no brief is rewritten and no dispatch is created: the next transition needs its own
-    approval with the current digest."""
-    from harness.orchestration.ledger.ledger_ops import _ledger_lock
-
-    store = _store(repo, root, batch_id)
+    In one store unit every check of ``status`` runs first.  A refused check changes nothing,
+    except that a batch whose record the strict read refuses is held in the store.  Otherwise
+    the hold is released and the coordinator reacts to every open supervised dispatch as the
+    runtime observes it: an ended execution gets its reaction, an unknown one is refused, and
+    a live worker is never started a second time.  No approval, attention, budget, auto stop or
+    terminal refusal is changed, no brief is rewritten and no dispatch is created: the next
+    transition needs its own approval with the current digest."""
     run = _Run()
-    with tracked(store, batch_id, "resume") as intent:
+    with tracked(repo, root, batch_id, "resume") as intent:
         ledger = LifecycleLedger(root)
         with _ledger_lock(ledger):
             survey = Survey(repo, root, batch_id).run()
@@ -1228,16 +1314,21 @@ def resume(
             ]
             if refusals:
                 run.refused.extend(refusals)
-                _hold_unreadable(store, survey, run, refusals[0])
+                _hold_unreadable(root, survey, run, refusals[0])
             else:
-                _reconcile(repo, root, ledger, store, survey, run)
+                _reconcile(repo, root, survey, run)
         if not run.refused and survey.batch is not None:
             _continue_stop(repo, root, batch_id, survey.batch, approval, run)
         outcome = "refused" if run.refused else "done"
         intent.finish(
             outcome, outcome, None if not run.refused else run.refused[0].message
         )
-    final = Survey(repo, root, batch_id).run()
+    with read_state(LifecycleLedger(root), repo):
+        final = Survey(repo, root, batch_id).run()
+        document = final.document()
+        following = (
+            _next_transition(root, final) if outcome == "done" else final.next_step()
+        )
     return {
         "contract": RECOVERY_CONTRACT,
         "action": "resume",
@@ -1247,32 +1338,28 @@ def resume(
         "refusals": [item.to_dict() for item in run.refused],
         "dispatch_created": False,
         "worker_started": False,
-        "status": final.document(),
-        "next": _next_transition(root, final)
-        if outcome == "done"
-        else final.next_step(),
+        "status": document,
+        "next": following,
     }
 
 
 def _hold_unreadable(
-    store: RuntimeStateStore,
+    root: Path,
     survey: Survey,
     run: _Run,
     refusal: RecoveryDiagnostic,
 ) -> None:
-    """Hold a batch whose ledger record does not read, through the store alone: no lifecycle
-    record is written for it, and every command that would act on it stops on the hold.  A
-    store that refused is not written either.  A readable batch is not held: the commands that
-    repair it (dispatch cancel, attention resolve) keep working."""
+    """Hold a batch whose record the strict read refuses, through its recovery record alone: no
+    lifecycle record is written for it, and every command that would act on it stops on the
+    hold.  A store that refused is not written either.  A readable batch is not held: the
+    commands that repair it (dispatch cancel, attention resolve) keep working."""
     if (
         survey.batch is not None
         or survey.hold_reason is None
         or survey.checks["store"].status == "refused"
     ):
         return
-    held = operational_hold.hold(
-        store, survey.batch_id, survey.hold_reason, refusal.message
-    )
+    held = operational_hold.hold(root, survey.batch_id, survey.hold_reason, refusal.message)
     if held is not None:
         run.step(
             "hold",
@@ -1281,29 +1368,43 @@ def _hold_unreadable(
         )
 
 
-def _reconcile(
-    repo: Path,
-    root: Path,
-    ledger: LifecycleLedger,
-    store: RuntimeStateStore,
-    survey: Survey,
-    run: _Run,
-) -> None:
-    """Release the hold, then finish an unfinished operation; the caller holds the lock."""
+def _reconcile(repo: Path, root: Path, survey: Survey, run: _Run) -> None:
+    """Release the hold, then react to the observed execution of every open supervised
+    dispatch; the caller's store unit writes both."""
+    from harness.orchestration.workflow import execution_reaction
+
     held = survey.hold
     if held is not None:
-        operational_hold.release(store, survey.batch_id)
+        operational_hold.release(root, survey.batch_id)
         run.step("release", f"the {held.reason} hold is released", hold=held.to_dict())
-    try:
-        reconciled = settle(repo, root, ledger, survey.batch_id)
-    except RuntimeStateError as exc:
-        run.refused.append(RecoveryDiagnostic.from_error("operation", exc))
-        return
-    if reconciled:
-        run.step(
-            "reconcile",
-            "the unfinished operation was finished from its durable intent",
-        )
+    for entry, dispatch in survey._briefs():
+        if not execution_reaction.supervised(root, dispatch):
+            continue
+        try:
+            execution = execution_reaction.observe(repo, root, entry["dispatch_id"])
+        except HarnessError as exc:
+            run.refused.append(RecoveryDiagnostic.from_error("operation", exc))
+            return
+        state = None if execution is None else execution.get("state")
+        if state == "unknown":
+            run.refused.append(
+                RecoveryDiagnostic(
+                    "ambiguous-effect",
+                    "operation",
+                    f"the runtime does not know whether the worker of {entry['dispatch_id']} "
+                    "runs: nothing proves the outcome of its hand-off",
+                    remedy="stop the worker, or wait until the runtime observes it again; a "
+                    "live or unproved worker is never started a second time",
+                )
+            )
+            return
+        if state is not None and state not in execution_reaction.UNSETTLED_EXECUTION_STATES:
+            run.step(
+                "reconcile",
+                f"the {state} execution of {entry['dispatch_id']} got its reaction",
+                dispatch_id=entry["dispatch_id"],
+                execution=state,
+            )
 
 
 def _continue_stop(

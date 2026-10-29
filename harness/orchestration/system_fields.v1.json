@@ -939,6 +939,110 @@
         "unsupported"
       ]
     },
+    "recovery.action": {
+      "description": "An action of the shared recovery API of the core, the CLI and the Harness console; each records its durable intent in the runtime store first, except skip.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "fix": "Preview, or apply through the configuration transaction, the safe normalization of the current configuration; never resumes.",
+        "reload": "Re-read and validate the current configuration and the runtime hello; never starts a worker.",
+        "resume": "Re-check the batch, release its hold and react to the observed execution of its open dispatches through the existing approval gates.",
+        "skip": "Hide one allowlisted advisory for one session; never changes an execution policy.",
+        "abort": "Record that the operator left recovery; abandons no batch, stops no worker and cleans no worktree."
+      }
+    },
+    "recovery.check": {
+      "description": "A reconciliation check of the recovery status, in the order it runs.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config": "The current configuration is readable, valid and canonical after normalization.",
+        "store": "The batch's recovery hold record in the runtime store is readable, and whether it holds the batch.",
+        "ledger": "The runtime store validates.",
+        "batch": "The batch record reads through the strict canonical boundary with its brief, checkpoint and report hashes.",
+        "lifecycle": "The batch is neither terminal nor stopped without a human approval.",
+        "runtime": "The batch's pinned harness runtime is the installed one or a verified snapshot its commands run on.",
+        "snapshot": "Every open brief's pinned configuration snapshot and contract verify.",
+        "context": "Every open brief's Context Package verifies and matches the batch's base and current developer candidate.",
+        "compatibility": "The runtime hello speaks the protocol and the features recovery needs.",
+        "operation": "The observed execution of every open supervised dispatch: resume reacts to an ended one and refuses an unknown one.",
+        "liveness": "Which workers may still run; resume never starts another one.",
+        "attention": "No unresolved attention; recovery never resolves it.",
+        "approval": "No unsent brief rests on an expired approval, and a changed policy needs a fresh digest."
+      }
+    },
+    "recovery.check_status": {
+      "description": "The result of one reconciliation check.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "passed": "Nothing blocks recovery here.",
+        "pending": "Resume reconciles or releases it, or needs the approval it names.",
+        "reconciled": "Resume reconciled it in this run.",
+        "refused": "It blocks recovery until its diagnostics are resolved.",
+        "skipped": "Its input could not be read, so it did not run."
+      }
+    },
+    "recovery.diagnostic_code": {
+      "description": "The cause a recovery diagnostic names; an exception that is not a refusal is internal-error, never a configuration problem.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-invalid": "The current configuration is unreadable or invalid at the pointer.",
+        "config-advisory": "A configuration warning, such as a normalized spelling; skippable only when allowlisted.",
+        "runtime-compatibility": "The runtime speaks another protocol or lacks a feature recovery needs.",
+        "integrity-failure": "A store, batch, hold or snapshot record does not verify.",
+        "stale-evidence": "An open brief pins a Context Package older than the batch's base or current developer candidate.",
+        "ambiguous-effect": "The runtime does not know whether a worker of an open dispatch runs.",
+        "concurrency-conflict": "Another writer changed a record the action read.",
+        "storage-unavailable": "The runtime store cannot be read or written.",
+        "live-worker": "A worker may still run; no second one is started.",
+        "attention-open": "The batch needs human attention that recovery never resolves.",
+        "approval-required": "A transition needs a human approval with the current digest.",
+        "approval-stale": "An unsent brief rests on an expired approval.",
+        "terminal-refusal": "The batch is terminal and is never resumed.",
+        "internal-error": "An internal invariant was violated; the diagnostic carries a correlation ID."
+      }
+    },
+    "recovery.outcome": {
+      "description": "How a recovery action ended; the CLI exits 0 on done and 2 on refused.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "done": "The action completed.",
+        "refused": "The action stopped on its diagnostics; nothing it could not prove was changed."
+      }
+    },
+    "recovery.intent_status": {
+      "description": "The durable status of the operator's last recovery intent of a batch; evidence, never an authorization.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "pending": "The action started and has not ended; a restart shows it and repeats it safely.",
+        "done": "The action completed.",
+        "refused": "The action stopped on a refusal or an internal error.",
+        "interrupted": "The action was cancelled, reached end of input or was interrupted.",
+        "aborted": "The operator left recovery without changing the batch."
+      }
+    },
+    "recovery.advisory": {
+      "description": "The closed allowlist of advisories that recovery skip hides for one session.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-normalized": "A configuration spelling the normalizer already maps to its canonical value."
+      }
+    },
+    "operational_hold.reason": {
+      "description": "Why the recovery record recovery/hold/<batch_id>.json of the runtime store holds a batch: the failure step hold:<reason>. A held batch takes no action until recovery resume re-checks the cause; nothing is abandoned, retried or decided on it.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "unknown-value": "A system field holds a value the registry does not list; a human classifies it.",
+        "missing-value": "A system field or structured evidence a decision needs is absent; a human supplies it.",
+        "unreadable-record": "The batch record or its hold record cannot be read; recovery resume releases a readable hold once the batch reads again."
+      }
+    },
     "extension.kind": {
       "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",
       "automatic_decisions": false,

@@ -399,6 +399,24 @@ def read_state(ledger: LifecycleLedger, repo: Path) -> Iterator[None]:
         yield
 
 
+def _read_store_record(root: Path, relative: str) -> tuple[JsonObject | None, int | None]:
+    """The record of the runtime store at ``relative`` as the bound view reads it, with the
+    revision of its row: ``(None, None)`` when the store holds none. Only the store epoch keeps
+    such a record, and only a bound view reads it (``read_state``, ``_ledger_lock``)."""
+    view = state_view.current_view()
+    if view is None or view.root != root or not store_is_authority(root):
+        raise CoordinatorError(
+            f"{relative} is read only from the runtime store of the running command",
+            remedy="read it inside the command's read_state or _ledger_lock block of the "
+            "runtime-store epoch",
+        )
+    record = view.read(relative)
+    return (
+        None if record is None else dict(record),
+        None if record is None else view.revisions.get(relative),
+    )
+
+
 def _load_batch(root: Path, batch_id: str) -> JsonObject:
     with _ledger_errors():
         return BatchRecord.from_dict(

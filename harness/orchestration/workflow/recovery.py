@@ -235,6 +235,25 @@ def _stop_to_resume(batch: JsonObject) -> JsonObject | None:
     return None if batch.get("manual_recovery") else batch.get("auto_stop")
 
 
+STOPPED_STATES = frozenset({"paused", "blocked", "failed"})
+
+
+def stopped_route(batch: JsonObject) -> str | None:
+    """The existing audited event that recovers a stopped batch, as ``batch resume-stop`` itself
+    chooses it: ``resume-stop`` for an environment stop of an active dispatch or for a pending
+    report, ``rewind`` for any other stop (a human then names the gate); ``None`` when the batch
+    is not stopped.  Recovery never invents another lifecycle event (issue #684)."""
+    if batch.get("state") not in STOPPED_STATES or terminal(batch):
+        return None
+    entries = active_dispatches(batch)
+    stop = _stop_to_resume(batch)
+    if entries and (not stop or stop.get("reason") in ENVIRONMENT_REASONS):
+        return "resume-stop"
+    if any(e.get("state") == "reported" and not e.get("decision") for e in entries):
+        return "resume-stop"
+    return "rewind"
+
+
 def _confirmed_failure(
     root: Path,
     batch: JsonObject,
