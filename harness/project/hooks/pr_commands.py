@@ -126,6 +126,8 @@ READ_REDIRECTIONS = frozenset({"<", "<<", "<<-", "<<<"})
 STREAM_NAMES = frozenset({"stdin", "stdout", "stderr"})
 # Splits a word into the tokens that may name a written file or a program.
 PATTERN_SPLIT = re.compile(r"[\s'\"();&|<>=,]+")
+# An extglob operator: before the split it becomes `*(`, a pattern that names any name.
+EXTGLOB = re.compile(r"[?*+@!]\(")
 CREATE_TEXT = re.compile(r"\bgh\s+pr\s+(?:create|new)\b|\bglab\s+mr\s+(?:create|new)\b")
 # The only create text the QA gate matched before #443.
 LEGACY_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
@@ -948,28 +950,48 @@ def _naming_parts(
     return parts
 
 
+def _glob_regexes(pattern: str) -> set[re.Pattern[str]]:
+    """Регулярные выражения для надмножества имён, которые может дать шаблон `pattern`.
+
+    `*` — любая строка, `?` — любой символ, а всё от первой `[` — хотя бы один любой символ: в
+    записанном имени `[` нет (`_data_path`), поэтому шаблон называет его только скобочным
+    выражением, а оно совпадает ровно с одним символом и может продолжаться за границей токена
+    (`m.[s=]h` делится на `m.[s` и `]h`). Синтаксис внутри скобок (`!`, `^`, диапазоны,
+    `[:lower:]`, `[=s=]`, `[.s.]`) не разбирается. Регистр не различается; второе выражение
+    строится по `casefold` шаблона.
+    """
+    head, bracket, _ = pattern.partition("[")
+    superset = head + ("?*" if bracket else "")
+    return {
+        re.compile(fnmatch.translate(text), re.IGNORECASE)
+        for text in (superset, superset.casefold())
+    }
+
+
 class _Mentions:
     """Что называют части команды (`_naming_parts`), по их владельцам.
 
-    Файл называет подстрока его имени или шаблон с `*`, `?`, `[`; любое слово с `{` называет
-    всё; программу писателя и `exec` называет отдельное слово. Имена файлов и шаблоны
-    сравниваются без учёта регистра (`casefold`): на файловой системе без учёта регистра
-    (Windows, macOS) `M.SH` и `m.sh` — один файл.
+    Файл называет подстрока его имени или шаблон с `*`, `?`, `[` (`_glob_regexes`); extglob
+    `?(`, `+(`, `@(`, `!(` читается как `*(`; любое слово с `{` называет всё; программу
+    писателя и `exec` называет отдельное слово. Имена файлов и шаблоны сравниваются без учёта
+    регистра: на файловой системе без учёта регистра (Windows, macOS) `M.SH` и `m.sh` — один
+    файл. Шаблон сравнивается и с исходным именем, и с его `casefold`: `casefold` меняет длину
+    (`ß` → `ss`), а `?` совпадает с одним символом.
     """
 
     def __init__(self, parts: list[tuple[int, str, bool]]) -> None:
         self.texts: dict[int, list[str]] = {}
         self.braces: set[int] = set()
-        self.patterns: list[tuple[int, str]] = []
+        self.patterns: list[tuple[int, set[re.Pattern[str]]]] = []
         self.words: dict[str, set[int]] = {}
         for owner, text, program_word in parts:
             self.texts.setdefault(owner, []).append(text.casefold())
-            for token in PATTERN_SPLIT.split(text):
+            for token in PATTERN_SPLIT.split(EXTGLOB.sub("*(", text)):
                 last = token.rsplit("/", 1)[-1]
                 if "{" in token:
                     self.braces.add(owner)
                 elif any(char in token for char in "*?["):
-                    self.patterns.append((owner, last.casefold()))
+                    self.patterns.append((owner, _glob_regexes(last)))
                 if last == "exec" or (last in DATA_WRITERS and not program_word):
                     self.words.setdefault(last, set()).add(owner)
         # A name holds no "\0", so it occurs in the joined parts as often as in the parts together.
@@ -977,7 +999,9 @@ class _Mentions:
 
     def name_writer(self, owner: int, program: str, files: list[str]) -> bool:
         """Называет ли часть не от `owner` записанные им `files`, его `program` или `exec`."""
-        names = [path.rsplit("/", 1)[-1].casefold() for path in files]
+        bases = [path.rsplit("/", 1)[-1] for path in files]
+        names = [base.casefold() for base in bases]
+        spellings = {*bases, *names}
         own = "\0".join(self.texts.get(owner, []))
         return (
             _named_elsewhere(self.braces, owner)
@@ -987,9 +1011,11 @@ class _Mentions:
             )
             or any(self.total.count(name) > own.count(name) for name in names)
             or any(
-                other != owner and fnmatch.fnmatchcase(name, pattern)
-                for other, pattern in self.patterns
-                for name in names
+                regex.match(name)
+                for other, regexes in self.patterns
+                if other != owner
+                for regex in regexes
+                for name in spellings
             )
         )
 

@@ -73,6 +73,12 @@ ALLOWED = [
         + "\nEOF\npytest -q",
         id="two-writers",
     ),
+    pytest.param(
+        "cd /repo && cat > body.md <<'EOF'\n"
+        + MERGE
+        + "\nEOF\npytest -q 'tests/core/test_x.py::test_a[1]'",
+        id="bracket-pattern-naming-another-file",
+    ),
 ]
 
 BLOCKED = [
@@ -110,6 +116,31 @@ BLOCKED = [
         id="written-script-run-in-another-case",
     ),
     pytest.param(SCRIPT + "bash *.SH", id="written-script-by-glob-in-another-case"),
+    # bash expands each of these bracket expressions to m.sh (M.SH below).
+    pytest.param(SCRIPT + "bash m.[!A-Z]h", id="written-script-by-negated-range"),
+    pytest.param(
+        SCRIPT + "sh m.s[!A-Z]", id="written-script-by-negated-range-at-the-end"
+    ),
+    pytest.param(
+        "cd /repo && cat > M.SH <<'EOF'\n" + MERGE + "\nEOF\nbash M.[!a-z]H",
+        id="written-script-by-negated-range-in-another-case",
+    ),
+    pytest.param(SCRIPT + "bash m.[^x]h", id="written-script-by-caret-negation"),
+    pytest.param(SCRIPT + "sh m.[[:lower:]]h", id="written-script-by-character-class"),
+    pytest.param(SCRIPT + "sh m.[[=s=]]h", id="written-script-by-equivalence-class"),
+    pytest.param(SCRIPT + "sh m.[[.s.]]h", id="written-script-by-collating-symbol"),
+    pytest.param(
+        SCRIPT + "bash m.[s=]h", id="written-script-by-bracket-with-a-separator"
+    ),
+    # casefold turns ß into ss, while bash matches `?` against the one character ß.
+    pytest.param(
+        "cd /repo && cat > ß.sh <<'EOF'\n" + MERGE + "\nEOF\nbash ?.sh",
+        id="written-script-by-pattern-with-a-folded-name",
+    ),
+    pytest.param(
+        SCRIPT + "bash <<'X'\nshopt -s extglob\nbash m.@(sh)\nX",
+        id="written-script-by-extglob-in-a-shell-heredoc",
+    ),
     pytest.param(
         "cd /repo && cat <<'EOF' > f | bash\n" + MERGE + "\nEOF",
         id="writer-in-a-pipeline",
