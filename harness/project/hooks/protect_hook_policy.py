@@ -15,11 +15,13 @@
 Bash: любая запись в `.harness/project.json` — блок. Записью считается перенаправление в этот файл
 (цели перенаправлений записывает строгий лексер `pr_commands`) и упоминание файла аргументом любой
 программы, кроме читающих (`cat`, `grep`, `sed` без `-i`, безопасных подкоманд git и т. п.): `tee`,
-`cp`, `mv`, `dd of=`, `sed -i`, `git checkout --`, код интерпретатора. Слово, указывающее на каталог
-`.harness`, для пишущей программы тоже упоминание: `git checkout <ref> -- .harness`,
-`git restore --source=<ref> .harness`, `cp -r <каталог>/. .harness/`, `tar -C .harness -xf <архив>`
-заменяют файл вместе с ключом hook_policy. Команда вне строгого подмножества
-разбирается общим разбором `pr_commands.parse`; цель перенаправления в ней ищется по тексту.
+`cp`, `mv`, `dd of=`, `sed -i`, `git checkout --`, код интерпретатора. За обёрткой `command`, `env`,
+`sudo`, `timeout` решает запущенная ею программа; обёртка с опцией не из `WRAPPERS` — пишущая
+программа. Слово, указывающее на каталог `.harness`, для пишущей программы тоже упоминание:
+`git checkout <ref> -- .harness`, `git restore --source=<ref> .harness`,
+`cp -r <каталог>/. .harness/`, `tar -C .harness -xf <архив>` заменяют файл вместе с ключом
+hook_policy. Команда вне строгого подмножества разбирается общим разбором `pr_commands.parse`; цель
+перенаправления в ней ищется по тексту.
 
 Пути сравниваются после `realpath` по хвосту (`.harness/project.json`), поэтому symlink на защищённый
 файл и другой checkout или worktree решение не меняют. Остаточные ограничения: запись через скрипт в
@@ -35,7 +37,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from harness.project.hooks import pr_commands
@@ -120,6 +122,66 @@ GIT_VALUE_OPTIONS = frozenset(
         "--config-env",
     }
 )
+
+
+class Wrapper(NamedTuple):
+    """Опции обёртки, которая запускает программу из остатка argv."""
+
+    flags: str  # short options without a value
+    values: str  # short options with a value: the rest of the word or the next word
+    long: Dict[str, bool]  # long option -> whether it takes the next word as its value
+    assignments: bool  # NAME=VALUE words before the program
+    operands: int  # positional words before the program (`timeout DURATION`)
+
+
+# An option missing here (`env -C|-S`, `sudo -D|-e`) keeps the wrapper as the program.
+WRAPPERS = {
+    "command": Wrapper(flags="pvV", values="", long={}, assignments=False, operands=0),
+    "env": Wrapper(
+        flags="i0v",
+        values="u",
+        long={
+            "ignore-environment": False,
+            "null": False,
+            "debug": False,
+            "unset": True,
+        },
+        assignments=True,
+        operands=0,
+    ),
+    "sudo": Wrapper(
+        flags="AbEHknPS",
+        values="Cgpu",
+        long={
+            "askpass": False,
+            "background": False,
+            "preserve-env": False,
+            "set-home": False,
+            "non-interactive": False,
+            "preserve-groups": False,
+            "stdin": False,
+            "close-from": True,
+            "group": True,
+            "prompt": True,
+            "user": True,
+        },
+        assignments=True,
+        operands=0,
+    ),
+    "timeout": Wrapper(
+        flags="v",
+        values="ks",
+        long={
+            "foreground": False,
+            "preserve-status": False,
+            "verbose": False,
+            "kill-after": True,
+            "signal": True,
+        },
+        assignments=False,
+        operands=1,
+    ),
+}
 SED_IN_PLACE = re.compile(r"-[A-Za-z]*i.*|--in-place(?:=.*)?")
 GLOB_CHARACTERS = re.compile(r"[*?\[]")
 PROJECT_NAME = re.compile(r"project\.json", re.IGNORECASE)
@@ -282,8 +344,56 @@ def _git_subcommand(argv: Sequence[str]) -> Optional[str]:
     return None
 
 
+def _after_options(words: Sequence[str], wrapper: Wrapper) -> Optional[Sequence[str]]:
+    """argv программы после опций обёртки; None — опция обёртки неизвестна."""
+    index = 0
+    while index < len(words) and words[index].startswith("-") and words[index] != "-":
+        word = words[index]
+        if word == "--":
+            index += 1
+            break
+        if word.startswith("--"):
+            name, equals, _ = word[2:].partition("=")
+            if name not in wrapper.long:
+                return None
+            index += 2 if wrapper.long[name] and not equals else 1
+            continue
+        letters = word[1:]
+        valued = next(
+            (at for at, letter in enumerate(letters) if letter not in wrapper.flags),
+            None,
+        )
+        if valued is None:
+            index += 1
+        elif letters[valued] in wrapper.values:
+            index += 1 if valued + 1 < len(letters) else 2
+        else:
+            return None
+    while (
+        wrapper.assignments
+        and index < len(words)
+        and pr_commands.ASSIGNMENT.fullmatch(words[index])
+    ):
+        index += 1
+    return words[index + wrapper.operands :]
+
+
+def _unwrapped(argv: Sequence[str]) -> Sequence[str]:
+    """argv программы, которую запускают обёртки (`command`, `env`, `sudo`, `timeout`)."""
+    while argv:
+        wrapper = WRAPPERS.get(pr_commands.program(argv[0]))
+        inner = None if wrapper is None else _after_options(argv[1:], wrapper)
+        if inner is None:
+            return argv
+        argv = inner
+    return argv
+
+
 def _writes(argv: Sequence[str]) -> bool:
     """Может ли программа команды изменить файл, названный в её аргументах."""
+    argv = _unwrapped(argv)
+    if not argv:
+        return False
     name = pr_commands.program(argv[0])
     if name in READERS:
         return False
@@ -312,8 +422,8 @@ def _mentions(word: str, bases: Sequence[str]) -> bool:
 def _bases(argvs: Sequence[Sequence[str]], cwd: str, root: str) -> List[str]:
     """Каталоги, от которых слово команды может читаться как путь (cwd, корень, цели `cd`)."""
     bases = [cwd, root]
-    for argv in argvs:
-        if pr_commands.program(argv[0]) in ("cd", "pushd") and len(argv) > 1:
+    for argv in map(_unwrapped, argvs):
+        if len(argv) > 1 and pr_commands.program(argv[0]) in ("cd", "pushd"):
             bases.append(os.path.join(cwd, argv[1]))
     return list(dict.fromkeys(bases))
 
