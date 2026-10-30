@@ -221,18 +221,28 @@ impl Group {
     /// Whether a member of the group outlives its gone leader. The kernel gives the number of a
     /// group to another process only once the group is empty, and that process may lead a group
     /// of the same number: a live process at the leader's pid proves the execution's group gone.
+    /// `killpg` reaches a zombie too, so a group it reaches is empty only when `process::members`
+    /// proves that no member has a thread left; without that proof the group lives.
     ///
     /// # Errors
     /// Why the group cannot be observed.
     pub(crate) fn members_alive(&self) -> Result<bool, String> {
-        if matches!(
-            identity::probe(i64::from(self.0.as_raw())),
-            Probe::Running(_)
-        ) {
+        let pgid = i64::from(self.0.as_raw());
+        if matches!(identity::probe(pgid), Probe::Running(_)) {
             return Ok(false);
         }
-        self.alive()
-            .map_err(|err| format!("the process group cannot be observed: {err}"))
+        if !self
+            .alive()
+            .map_err(|err| format!("the process group cannot be observed: {err}"))?
+        {
+            return Ok(false);
+        }
+        // An unproven pass keeps the group alive: an error here would let a watcher record the
+        // exit without that proof.
+        Ok(!matches!(
+            process::members(pgid),
+            process::Members::NoLiveMember
+        ))
     }
 
     /// Send `signal` to the group; a group that is gone already is no failure.
@@ -270,6 +280,10 @@ pub(crate) fn outlived(pgid: i64) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
     use super::*;
 
     #[test]
@@ -280,5 +294,58 @@ mod tests {
 
         assert_eq!(Group::of_pgid(2), Ok(Group(Pid::from_raw(2))));
         assert!(outlived(1).unwrap_err().contains("never signalled"));
+    }
+
+    /// `script` under `sh`, as the leader of a new process group that nobody reaps yet.
+    fn leader(script: &str) -> Child {
+        Command::new("sh")
+            .args(["-c", script])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Wait until the unreaped child `pid` is a zombie.
+    fn wait_zombie(pid: i64) {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|line| process::parse_stat(&line))
+                .map(|(state, _, _)| state);
+            if state == Some('Z') {
+                return;
+            }
+            assert!(Instant::now() < until, "{pid} is no zombie: {state:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_group_whose_only_member_is_a_zombie_is_empty() {
+        let mut child = leader("exit 0");
+        let pid = i64::from(child.id());
+        wait_zombie(pid);
+
+        let outcome = outlived(pid);
+
+        child.wait().unwrap();
+        assert_eq!(outcome, Ok(false));
+    }
+
+    #[test]
+    fn a_live_member_holds_the_group_of_a_zombie_leader() {
+        let mut child = leader("sleep 30 & exit 0");
+        let pid = i64::from(child.id());
+        wait_zombie(pid);
+
+        let outcome = outlived(pid);
+
+        let _ = killpg(Pid::from_raw(i32::try_from(pid).unwrap()), Signal::SIGKILL);
+        child.wait().unwrap();
+        assert_eq!(outcome, Ok(true));
     }
 }
