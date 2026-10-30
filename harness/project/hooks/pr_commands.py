@@ -124,8 +124,10 @@ FILE_OUTPUTS = frozenset({">", ">>", ">|"})
 READ_REDIRECTIONS = frozenset({"<", "<<", "<<-", "<<<"})
 # The last part of /dev/stdin and the like: a written path that ends so may be a descriptor.
 STREAM_NAMES = frozenset({"stdin", "stdout", "stderr"})
-# Splits a word into the tokens that may name a written file or a program.
-PATTERN_SPLIT = re.compile(r"[\s'\"();&|<>=,]+")
+# Splits a word into the tokens that may name a written file or a program: at every character
+# that ends a shell word (blanks, `;&|<>()`, a backquote) or that quote removal drops (quotes,
+# `$'`, `$"`, `\`), and at `=` and `,`.
+PATTERN_SPLIT = re.compile(r"(?:\$?['\"]|[\s();&|<>=,\\`])+")
 # An extglob operator: before the split it becomes `*(`, a pattern that names any name.
 EXTGLOB = re.compile(r"[?*+@!]\(")
 CREATE_TEXT = re.compile(r"\bgh\s+pr\s+(?:create|new)\b|\bglab\s+mr\s+(?:create|new)\b")
@@ -951,9 +953,10 @@ def _naming_parts(
 
 
 def _glob_regexes(pattern: str) -> set[re.Pattern[str]]:
-    """Регулярные выражения для надмножества имён, которые может дать шаблон `pattern`.
+    """Регулярные выражения для надмножества имён, которые может назвать токен `pattern`.
 
-    `*` — любая строка, `?` — любой символ, а всё от первой `[` — хотя бы один любой символ: в
+    Токен без `*`, `?`, `[` совпадает с именем целиком. Шаблон — с любой подстрокой имени:
+    `*` — любая строка, `?` — любой символ, а всё от первой `[` — ровно один любой символ. В
     записанном имени `[` нет (`_data_path`), поэтому шаблон называет его только скобочным
     выражением, а оно совпадает ровно с одним символом и может продолжаться за границей токена
     (`m.[s=]h` делится на `m.[s` и `]h`). Синтаксис внутри скобок (`!`, `^`, диапазоны,
@@ -961,10 +964,11 @@ def _glob_regexes(pattern: str) -> set[re.Pattern[str]]:
     строится по `casefold` шаблона.
     """
     head, bracket, _ = pattern.partition("[")
-    superset = head + ("?*" if bracket else "")
+    if bracket or "*" in head or "?" in head:
+        head = "*" + head + ("?" if bracket else "") + "*"
     return {
         re.compile(fnmatch.translate(text), re.IGNORECASE)
-        for text in (superset, superset.casefold())
+        for text in (head, head.casefold())
     }
 
 
@@ -977,6 +981,16 @@ class _Mentions:
     регистра: на файловой системе без учёта регистра (Windows, macOS) `M.SH` и `m.sh` — один
     файл. Шаблон сравнивается и с исходным именем, и с его `casefold`: `casefold` меняет длину
     (`ß` → `ss`), а `?` совпадает с одним символом.
+
+    Шаблоны — надмножество раскрытия путей bash при любом разбиении слова. Пусть bash раскрывает
+    слово в путь с записанным именем. В имени нет `*`, `?`, `[` (`_data_path`), поэтому первый
+    элемент шаблона в последнем компоненте слова стоит вне кавычек и без `\\`. PATTERN_SPLIT
+    режет по каждому символу, которым кончается слово или который снимает удаление кавычек,
+    поэтому токен с этим элементом лежит в последнем компоненте, а до элемента в нём только
+    обычные символы, совпавшие с символами имени подряд. Дальше до первой `[` идут обычные
+    символы, `*` и `?`, а `[` совпадает с одним символом, поэтому шаблон токена
+    (`_glob_regexes`) совпадает с подстрокой имени, какие бы символы рядом ни отрезало
+    разбиение.
     """
 
     def __init__(self, parts: list[tuple[int, str, bool]]) -> None:

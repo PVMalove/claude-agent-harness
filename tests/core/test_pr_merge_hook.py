@@ -79,6 +79,11 @@ ALLOWED = [
         + "\nEOF\npytest -q 'tests/core/test_x.py::test_a[1]'",
         id="bracket-pattern-naming-another-file",
     ),
+    # A pattern in a directory only: bash expands it to files named `body`, never body.md.
+    pytest.param(
+        "cd /repo && cat > body.md <<'EOF'\n" + MERGE + "\nEOF\npytest -q tests/*/body",
+        id="pattern-in-a-directory-naming-another-file",
+    ),
 ]
 
 BLOCKED = [
@@ -140,6 +145,48 @@ BLOCKED = [
     pytest.param(
         SCRIPT + "bash <<'X'\nshopt -s extglob\nbash m.@(sh)\nX",
         id="written-script-by-extglob-in-a-shell-heredoc",
+    ),
+    # The hook cuts each of these words at `,`, `=`, a space, a quote, `\`, a backquote or
+    # `$'`, while bash expands the whole word to the written file.
+    pytest.param(
+        "cd /repo && cat > a,b.sh <<'EOF'\n" + MERGE + "\nEOF\nbash a,b.?h",
+        id="written-script-by-pattern-after-a-comma",
+    ),
+    pytest.param(
+        "cd /repo && cat > a,b.sh <<'EOF'\n" + MERGE + "\nEOF\nbash a,b.[s]h",
+        id="written-script-by-bracket-after-a-comma",
+    ),
+    pytest.param(
+        "cd /repo && cat > a,b.sh <<'EOF'\n" + MERGE + "\nEOF\nbash a,b.s[h]",
+        id="written-script-by-bracket-at-the-end-after-a-comma",
+    ),
+    pytest.param(
+        "cd /repo && cat > a,b.sh <<'EOF'\n" + MERGE + "\nEOF\nbash ?,?.sh",
+        id="written-script-by-patterns-around-a-comma",
+    ),
+    pytest.param(
+        "cd /repo && cat > a=b.sh <<'EOF'\n" + MERGE + "\nEOF\nbash a=b.?h",
+        id="written-script-by-pattern-after-an-equals-sign",
+    ),
+    pytest.param(
+        "cd /repo && cat > 'a b.sh' <<'EOF'\n" + MERGE + "\nEOF\nbash 'a b'.?h",
+        id="written-script-by-pattern-after-a-quoted-space",
+    ),
+    pytest.param(
+        SCRIPT + "bash <<'X'\nbash 'm'.s?\nX",
+        id="written-script-by-pattern-after-quotes-in-a-shell-heredoc",
+    ),
+    pytest.param(
+        SCRIPT + "bash <<'X'\nbash m\\.s?\nX",
+        id="written-script-by-pattern-after-a-backslash-in-a-shell-heredoc",
+    ),
+    pytest.param(
+        SCRIPT + "bash <<'X'\necho `bash m.s?`\nX",
+        id="written-script-by-pattern-in-backquotes-in-a-shell-heredoc",
+    ),
+    pytest.param(
+        SCRIPT + "bash <<'X'\nbash m.?$'h'\nX",
+        id="written-script-by-pattern-before-ansi-c-quotes-in-a-shell-heredoc",
     ),
     pytest.param(
         "cd /repo && cat <<'EOF' > f | bash\n" + MERGE + "\nEOF",
