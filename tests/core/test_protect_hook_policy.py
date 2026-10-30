@@ -398,6 +398,29 @@ SHELL_WRITES = [
     "unzip /nonexistent/x.zip -d .harness",
     "cd .harness && cp /nonexistent/x .",
     "cp /nonexistent/x .harness/project.json",
+    # A wrapper runs the program after its options: that program decides.
+    "command sed -i s/a/b/ .harness/project.json",
+    "command -p cp a.json .harness/project.json",
+    "command command tee .harness/project.json",
+    "command cd .harness && cp /nonexistent/x .",
+    "env LC_ALL=C sed -i s/a/b/ .harness/project.json",
+    "env F=.harness/project.json python3 x.py",
+    "sudo -u root cp a.json .harness/project.json",
+    "sudo -n -- mv a.json .harness/project.json",
+    "timeout 5 git checkout HEAD~1 -- .harness",
+    "timeout -s KILL 5 dd if=a.json of=.harness/project.json",
+    "sudo env LC_ALL=C timeout 5 tee .harness/project.json",
+    # The value of a wrapper option is not the program, even when it names a reader.
+    "env -u ls cp a.json .harness/project.json",
+    "env -iu ls cp a.json .harness/project.json",
+    "env --unset ls cp a.json .harness/project.json",
+    "sudo -nu ls cp a.json .harness/project.json",
+    "sudo --user ls tee .harness/project.json",
+    # An option the wrapper table does not know keeps the wrapper as the program.
+    "env -C .harness cp /nonexistent/x .",
+    "env -S 'sed -i s/a/b/ .harness/project.json'",
+    "sudo -e .harness/project.json",
+    "sudo -D .harness cp /nonexistent/x .",
 ]
 
 
@@ -456,6 +479,24 @@ SHELL_READS = [
     "python3 .harness/orchestration/coordinator.py --repo . ledger validate",
     "tar -xf /nonexistent/x.tar -C build",
     "git checkout HEAD~1 -- harness/",
+    # A reading program behind a wrapper.
+    "cd . && command ls -a .harness | head; command ls .harness/.venv/bin 2>&1| head -3; "
+    "command ls .claude/hooks; sed -n 300,395p harness/console/server.py",
+    "command ls -lt --time-style=+%H:%M .harness/.sandboxes/runs/tests",
+    "command ls -a .harness",
+    "command -p ls -la .harness",
+    "env LC_ALL=C ls -la .harness",
+    "env -u LANG ls .harness",
+    "sudo -u root ls -la .harness",
+    "sudo -n -- cat .harness/project.json",
+    "timeout 5 ls -la .harness",
+    "timeout -k 1 -s KILL 30 sed -n 1,5p .harness/project.json",
+    "sudo env LC_ALL=C timeout 5 grep -n hook_policy .harness/project.json",
+    "sudo --user=root ls .harness",
+    "sudo --user root -- ls .harness",
+    "env --unset LANG -i ls .harness",
+    "timeout --kill-after=1 --signal KILL 30 ls .harness",
+    "timeout -vk 1 30 ls .harness",
 ]
 
 # Fail closed by design: any non-reading program whose argument names the file is refused, so a
