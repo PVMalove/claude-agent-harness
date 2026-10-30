@@ -10,11 +10,14 @@
 //! is the pid of the leader.
 //!
 //! After a restart the job is opened by the name the intent recorded. An intent is adopted by the
-//! earliest live member of its job, whose threads are resumed, because the launch may have died
-//! before its resume; a job without a name or a live member makes it `lost`. A recorded leader is
-//! observed by its pid and creation time, and its job by the number of the live members of the
-//! execution (`job::outcome`); a live leader in its job is held by this runtime until its row
-//! ends, so its exit code stays readable after it ends.
+//! live member of its job that the runtime of the intent launched (`job::leader_of`): created by
+//! the runtime the lease of the intent names, no earlier than it, and not the console host. Its
+//! threads are resumed, because the launch may have died before its resume. A job without a name
+//! or a live member of the execution makes the intent `lost`; members of the execution without
+//! exactly one such leader make it `unknown`, and the next reconcile looks again. A recorded
+//! leader is observed by its pid and creation time, and its job by the number of the live members
+//! of the execution (`job::outcome`); a live leader in its job is held by this runtime until its
+//! row ends, so its exit code stays readable after it ends.
 //!
 //! The hidden console has a console host, `conhost.exe` of the system directory, that runs as a
 //! member of the job and ends after the last process attached to the console. It is told apart by
@@ -29,6 +32,7 @@
 //! 137. The stop is proven when the job holds no live member of the execution and the leader is
 //! gone.
 
+use std::collections::HashMap;
 use std::io::{self, Read};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -38,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use platform_ffi::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS, Job, JobAccess,
-    Process, create_private_file, current_user_sid, send_ctrl_break, system_directory,
+    Process, create_private_file, current_user_sid, parent_pids, send_ctrl_break, system_directory,
 };
 use serde_json::{Map, Value, json};
 use state::executions::Execution;
@@ -158,46 +162,56 @@ pub(crate) fn identity_of(pid: i64, observer: &Observer) -> Option<(Identity, i6
     ))
 }
 
-/// The leader of an intent that no launch of this runtime holds: the earliest live member of the
-/// job object the intent named, with its threads resumed. `None` when the job has no name or no
-/// live member.
+/// The leader of an intent that no launch of this runtime holds, with its threads resumed: the
+/// live member of the job object the intent named that the runtime of the intent launched
+/// (`job::leader_of`), found by the identity of that runtime in the lease of the intent and by a
+/// snapshot of the creator of every process. `None` when the job has no name or no live member of
+/// the execution.
 ///
 /// # Errors
-/// The job cannot be opened or listed, or the leader cannot be resumed: nothing is proven.
+/// The job cannot be opened or listed, a member cannot be read, the intent records no readable
+/// identity of its runtime, no member or more than one is the leader, or the leader cannot be
+/// resumed: nothing is proven.
 pub(crate) fn find(execution: &Execution) -> io::Result<Option<(i64, String)>> {
     let Some(job) = Job::open(&job_name(execution), JobAccess::Control)? else {
         return Ok(None);
     };
-    let mut earliest: Option<(u64, Process)> = None;
-    for pid in job.processes()? {
-        // A member that has ended or left since the list is not the leader.
-        let Ok(Some(process)) = Process::open(pid) else {
-            continue;
-        };
-        let live =
-            matches!(process.exit_code(), Ok(None)) && matches!(job.contains(&process), Ok(true));
-        let Ok(created) = process.creation_time() else {
-            continue;
-        };
-        if live && earliest.as_ref().is_none_or(|(first, _)| created < *first) {
-            earliest = Some((created, process));
-        }
+    let parents = parent_pids()?;
+    let members = members(&job, None, Some(&parents))?;
+    if job::execution_members(&members) == 0 {
+        return Ok(None);
     }
-    let Some((created, leader)) = earliest else {
+    let (launcher, started) = launcher_of(execution).ok_or_else(|| {
+        io::Error::other("the intent records no readable identity of the runtime that launched it")
+    })?;
+    let Some(pid) = job::leader_of(&members, launcher, started).map_err(io::Error::other)? else {
         return Ok(None);
     };
+    let created = members
+        .iter()
+        .find(|member| member.pid == pid)
+        .map_or(0, |member| member.created);
+    // The pid is held from here: it names the member listed above only with its creation time.
+    let leader = Process::open(pid)?
+        .filter(|leader| leader.creation_time().is_ok_and(|time| time == created))
+        .ok_or_else(|| io::Error::other(format!("the leader {pid} ended meanwhile")))?;
     leader.resume()?;
-    Ok(Some((i64::from(leader.pid()), created.to_string())))
+    Ok(Some((i64::from(pid), created.to_string())))
 }
 
-/// The live members of `job`, with the console host told apart by its executable image
+/// The live members of `job`, with their creation time, their creator from the snapshot
+/// `parents` when one is given, and the console host told apart by its executable image
 /// (`job::is_console_host`). The recorded leader `leader` is never the console host. A member that
 /// has ended or left the job since the list is left out.
 ///
 /// # Errors
 /// The error of the OS: the job cannot be listed, or a member or the system directory cannot be
 /// read. Nothing is proven then.
-fn members(job: &Job, leader: Option<u32>) -> io::Result<Vec<job::Member>> {
+fn members(
+    job: &Job,
+    leader: Option<u32>,
+    parents: Option<&HashMap<u32, u32>>,
+) -> io::Result<Vec<job::Member>> {
     let system_dir = system_directory()?;
     let system_dir = system_dir.to_string_lossy();
     let mut members = Vec::new();
@@ -218,9 +232,24 @@ fn members(job: &Job, leader: Option<u32>) -> io::Result<Vec<job::Member>> {
                 Err(err) => return Err(err),
             }
         };
-        members.push(job::Member { pid, console_host });
+        members.push(job::Member {
+            pid,
+            parent: parents.and_then(|parents| parents.get(&pid).copied()),
+            created: process.creation_time()?,
+            console_host,
+        });
     }
     Ok(members)
+}
+
+/// The pid and the creation time of the runtime that recorded the intent of `execution`: the
+/// identity of the owner of its lease.
+fn launcher_of(execution: &Execution) -> Option<(u32, u64)> {
+    let owner = Identity::from_json(&execution.lease_owner["identity"])?;
+    Some((
+        u32::try_from(owner.pid).ok()?,
+        owner.start_time.parse().ok()?,
+    ))
 }
 
 /// Observe the recorded leader of `execution` and its job object, by the table of
@@ -234,7 +263,7 @@ pub(crate) fn observe(
     let opened = Job::open(&job_name(execution), JobAccess::Control);
     let job_seen = match &opened {
         Ok(None) => JobSeen::NameAbsent,
-        Ok(Some(job)) => members(job, u32::try_from(recorded.pid).ok()).map_or_else(
+        Ok(Some(job)) => members(job, u32::try_from(recorded.pid).ok(), None).map_or_else(
             |err| JobSeen::Unknown(format!("the job object cannot be observed: {err}")),
             |members| JobSeen::Members(job::execution_members(&members)),
         ),
@@ -469,7 +498,7 @@ impl Group {
     /// Why the job cannot be observed.
     pub(crate) fn members_alive(&self) -> Result<bool, String> {
         self.job.as_ref().map_or(Ok(false), |job| {
-            members(job, u32::try_from(self.leader.pid).ok())
+            members(job, u32::try_from(self.leader.pid).ok(), None)
                 .map(|members| job::execution_members(&members) > 0)
                 .map_err(|err| format!("the job object cannot be observed: {err}"))
         })
@@ -621,7 +650,7 @@ pub fn ctrl_break(job: &str, group: u32, pid: u32, created: &str) -> CtrlBreak {
             && live(leader)
     });
     let member = leader.or_else(|| {
-        members(&job, None)
+        members(&job, None, None)
             .ok()?
             .into_iter()
             .filter(|member| !member.console_host)

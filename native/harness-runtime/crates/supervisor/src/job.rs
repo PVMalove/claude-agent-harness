@@ -1,7 +1,8 @@
 //! The pure logic of the Windows supervisor (ADR 0022, sections 2, 3 and 5): the name of the job
-//! object of an execution, which members of the job belong to the execution, and what an
-//! observation of its leader and its job means. It makes no system call, so it builds and is
-//! tested on every platform.
+//! object of an execution, which members of the job belong to the execution, which member an
+//! intent adopts as its leader after a restart (`leader_of`), and what an observation of its
+//! leader and its job means. It makes no system call, so it builds and is tested on every
+//! platform.
 //!
 //! The hidden console of an execution has a console host, `conhost.exe` of the system directory,
 //! that Windows starts for it inside the job. It serves the console and ends after its last
@@ -38,6 +39,10 @@ const CONSOLE_HOST: &str = "conhost.exe";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
     pub pid: u32,
+    /// The pid of the process that created it, when it was looked up.
+    pub parent: Option<u32>,
+    /// Its creation time (a `FILETIME`: 100 ns intervals since 1601).
+    pub created: u64,
     /// Whether it is the console host of the hidden console of the execution.
     pub console_host: bool,
 }
@@ -54,6 +59,44 @@ pub fn is_console_host(image: &str, system_dir: &str) -> bool {
 pub fn execution_members(members: &[Member]) -> u32 {
     let count = members.iter().filter(|member| !member.console_host).count();
     u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// The leader among the live `members` of the job of an intent: the member that is not the
+/// console host, whose creator is the runtime `launcher_pid` that recorded the intent, and that
+/// was created no earlier than that runtime (`launcher_created`). Only that runtime launched a
+/// process into the job; every other member of the execution descends from the leader. Neither
+/// the place of a member in the list nor its creation time alone makes it the leader: the
+/// creation time is coarse, and a process may join the job after its creation.
+///
+/// `Ok(None)` when the job holds no live member of the execution: the intent is `lost`.
+///
+/// # Errors
+/// Live members of the execution, but none or more than one that the runtime of the intent
+/// created: nothing proves which process it launched.
+pub fn leader_of(
+    members: &[Member],
+    launcher_pid: u32,
+    launcher_created: u64,
+) -> Result<Option<u32>, String> {
+    let launched: Vec<u32> = members
+        .iter()
+        .filter(|member| {
+            !member.console_host
+                && member.parent == Some(launcher_pid)
+                && member.created >= launcher_created
+        })
+        .map(|member| member.pid)
+        .collect();
+    match launched.as_slice() {
+        [leader] => Ok(Some(*leader)),
+        [] if execution_members(members) == 0 => Ok(None),
+        [] => Err(format!(
+            "no live member of the job was created by the runtime {launcher_pid} of the intent"
+        )),
+        _ => Err(format!(
+            "the live members {launched:?} of the job were all created by the runtime {launcher_pid} of the intent"
+        )),
+    }
 }
 
 /// What the runtime sees of the recorded leader of an execution.
@@ -246,9 +289,98 @@ mod tests {
     }
 
     const SYSTEM: &str = r"C:\WINDOWS\system32";
+    /// The pid and the creation time of the runtime that recorded an intent.
+    const RUNTIME: u32 = 100;
+    const STARTED: u64 = 1_000;
 
     fn member(pid: u32, console_host: bool) -> Member {
-        Member { pid, console_host }
+        Member {
+            pid,
+            parent: None,
+            created: 0,
+            console_host,
+        }
+    }
+
+    fn created_by(pid: u32, parent: u32, created: u64) -> Member {
+        Member {
+            pid,
+            parent: Some(parent),
+            created,
+            console_host: false,
+        }
+    }
+
+    fn host_of(pid: u32, parent: u32, created: u64) -> Member {
+        Member {
+            console_host: true,
+            ..created_by(pid, parent, created)
+        }
+    }
+
+    #[test]
+    fn the_leader_is_the_member_the_runtime_of_the_intent_created_wherever_it_is_listed() {
+        let members = [
+            // A process created before the runtime, by another one, and put into the job.
+            created_by(7, 55, STARTED - 10),
+            // A console host the runtime created before the leader.
+            host_of(8, RUNTIME, STARTED + 1),
+            created_by(9, 9_000, STARTED + 1),
+            created_by(12, 20, STARTED + 3),
+            // The leader, created in the same tick as the console host.
+            created_by(20, RUNTIME, STARTED + 1),
+            host_of(21, 20, STARTED + 2),
+        ];
+
+        assert_eq!(leader_of(&members, RUNTIME, STARTED), Ok(Some(20)));
+        assert_eq!(
+            leader_of(
+                &[created_by(20, RUNTIME, STARTED), host_of(21, 20, STARTED)],
+                RUNTIME,
+                STARTED
+            ),
+            Ok(Some(20))
+        );
+    }
+
+    #[test]
+    fn a_console_host_is_never_the_leader_even_alone() {
+        for members in [
+            vec![host_of(8, RUNTIME, STARTED + 1)],
+            vec![host_of(8, RUNTIME, STARTED + 1), host_of(9, 4, STARTED + 2)],
+            vec![],
+        ] {
+            assert_eq!(
+                leader_of(&members, RUNTIME, STARTED),
+                Ok(None),
+                "{members:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_created_before_the_runtime_or_by_another_process_is_never_the_leader() {
+        for members in [
+            vec![created_by(7, RUNTIME, STARTED - 1)],
+            vec![created_by(7, 55, STARTED + 5), host_of(8, 7, STARTED + 6)],
+            vec![member(7, false)],
+        ] {
+            let found = leader_of(&members, RUNTIME, STARTED);
+            assert!(found.is_err(), "{members:?}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn two_members_the_runtime_created_prove_no_leader() {
+        let members = [
+            created_by(20, RUNTIME, STARTED + 1),
+            created_by(30, RUNTIME, STARTED + 2),
+            host_of(21, 20, STARTED + 2),
+        ];
+
+        let found = leader_of(&members, RUNTIME, STARTED);
+
+        assert!(found.is_err(), "{found:?}");
     }
 
     #[test]

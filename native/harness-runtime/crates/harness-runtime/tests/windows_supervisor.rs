@@ -4,9 +4,9 @@
 //! `TerminateJobObject` after the grace, and an execution outlives a runtime that dies. A new
 //! runtime finds its job by name, records its exit code from the handle it holds even while the
 //! console host of its hidden console lives on in the job, finishes a stop
-//! the dead runtime began, adopts the earliest member of the job of an intent without a second
-//! launch, records an intent without a process `lost`, and never signals a process that holds the
-//! pid of a forged identity.
+//! the dead runtime began, adopts the leader the runtime of an intent launched without a second
+//! launch and never a member created before it, records an intent without a process `lost`, and
+//! never signals a process that holds the pid of a forged identity.
 //!
 //! The runtime that dies is this test binary in a process of its own, running only the ignored
 //! test `runtime_process`, killed with `TerminateProcess`; the new runtime is a supervisor in the
@@ -33,7 +33,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use contracts::{ExecutionState, PROTOCOL_VERSION, Request};
-use platform_ffi::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, Job, JobAccess, Process};
+use platform_ffi::{
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, Job, JobAccess, Process,
+};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use state::canonical::{canonical_json, object_sha256, sha256_hex};
@@ -649,6 +651,82 @@ fn a_runtime_killed_after_the_spawn_is_followed_by_the_adoption_of_the_earliest_
     // The adoption launched nothing: the members are the ones before the restart.
     let after = windows_job::members(&job);
     windows_job::print("adopt after the restart", &after);
+    assert_eq!(
+        windows_job::pids(&after),
+        windows_job::pids(&before),
+        "{}",
+        windows_job::text(&after)
+    );
+}
+
+#[test]
+fn an_adoption_takes_the_leader_its_runtime_launched_and_never_an_earlier_member() {
+    // A decoy older than the runtime and its leader, created by this test, not by the runtime.
+    let mut decoy = Reaper(
+        Command::new("python")
+            .args([
+                "-c",
+                "import time\nprint('READY', flush=True)\nwhile True: time.sleep(0.05)",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(first_line(&mut decoy.0, LINE_WAIT), "READY");
+    let decoy_process = Process::from_child(&decoy.0).unwrap();
+    let script = "import os, time\nprint(os.getpid(), flush=True)\nwhile True: time.sleep(0.05)";
+    let repo = Repo::new("decoy", script, 300, 5);
+    let mut runtime = Runtime::start(&repo, Some("execution.launch:launched"));
+    runtime.line(true, "PAUSED:");
+    let leader = repo.printed_pid(20);
+    // The decoy joins the job of the execution after the leader: the earliest created member is
+    // not the leader.
+    let job = Job::open(&repo.job_name(), JobAccess::Assign)
+        .unwrap()
+        .unwrap();
+    job.assign(&decoy_process).unwrap();
+    let before = windows_job::wait_for(
+        &job,
+        "decoy before the restart",
+        &[
+            Expected::python("leader", leader),
+            Expected::python("decoy", decoy_process.pid()),
+            Expected::console_host_of(leader),
+        ],
+        20,
+    );
+    let leader_created = Process::open(leader)
+        .unwrap()
+        .unwrap()
+        .creation_time()
+        .unwrap();
+    assert!(decoy_process.creation_time().unwrap() < leader_created);
+
+    runtime.kill();
+
+    let supervisor = supervisor_of(repo.state());
+    supervisor.reconcile_all();
+    let running = repo.execution();
+    assert_eq!(
+        running.state,
+        ExecutionState::Running,
+        "{}",
+        repo.seen(&running)
+    );
+    let receipt = running.receipt.unwrap();
+    assert_eq!(receipt["adopted"], true);
+    assert_eq!(receipt["identity"]["pid"], leader, "{receipt}");
+    assert_eq!(
+        receipt["identity"]["start_time"],
+        leader_created.to_string(),
+        "{receipt}"
+    );
+    // The adoption launched nothing: the members are the ones before the restart.
+    let after = windows_job::members(&job);
+    windows_job::print("decoy after the restart", &after);
     assert_eq!(
         windows_job::pids(&after),
         windows_job::pids(&before),
