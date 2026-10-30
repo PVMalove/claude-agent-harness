@@ -3,13 +3,15 @@
 
 `python pr_commands.py merge` читает payload хука из stdin и завершается с кодом 2, если в
 `tool_input.command` есть merge PR/MR (`gh pr merge`, `glab mr merge|accept`) и команда не
-состоит целиком из инертных simple commands строгого лексера (fail closed, `merge_blocked`).
+состоит целиком из инертных simple commands строгого лексера, а merge-текст стоит не только в
+данных heredoc, которые `cat` или `tee` пишет в файл (fail closed, `merge_blocked`).
 `qa-gate-state.py` импортирует модуль, чтобы найти ветку создаваемого PR/MR (`create_heads`),
 `direct_commits.py` — чтобы найти вызовы `git commit`/`git push` (`parse`, `strict_steps`).
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import shlex
@@ -115,6 +117,15 @@ REDIRECTIONS = ("<<<", "<<-", "<<", "<>", "<&", "<", ">>", ">&", ">|", ">", "&>>
 COMMAND_SEPARATORS = ("&&", "||", "|&", ";", "&", "|")
 ASSIGNMENT_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\+?=|\[)")
 FD_NUMBER = re.compile(r"[0-9]+")
+# Heredoc data (`_merge_outside_data`): programs that copy a heredoc into a file, the operators
+# that send their stdout to one, and the redirections an inert reader may have.
+DATA_WRITERS = frozenset({"cat", "tee"})
+FILE_OUTPUTS = frozenset({">", ">>", ">|"})
+READ_REDIRECTIONS = frozenset({"<", "<<", "<<-", "<<<"})
+# The last part of /dev/stdin and the like: a written path that ends so may be a descriptor.
+STREAM_NAMES = frozenset({"stdin", "stdout", "stderr"})
+# Splits a word into the tokens that may name a written file or a program.
+PATTERN_SPLIT = re.compile(r"[\s'\"();&|<>=,]+")
 CREATE_TEXT = re.compile(r"\bgh\s+pr\s+(?:create|new)\b|\bglab\s+mr\s+(?:create|new)\b")
 # The only create text the QA gate matched before #443.
 LEGACY_CREATE = re.compile(r"\bgh\s+pr\s+create\b")
@@ -536,12 +547,22 @@ class StrictLexer:
     def __init__(self, text: str) -> None:
         self.text = text
         self.index = 0
-        # (delimiter, strip leading tabs, literal body) of operators whose body is not read yet.
-        self.heredocs: list[tuple[str, bool, bool]] = []
+        # (delimiter, strip leading tabs, literal body, index in `redirects`) of operators whose
+        # body is not read yet.
+        self.heredocs: list[tuple[str, bool, bool, int]] = []
         # Separators before each command `commands()` returns, joined: "", "&&", "|", ";\n", ...
         self.links: list[str] = []
         # (operator, target word) of every redirection read so far, heredoc operators included.
         self.redirects: list[tuple[str, str]] = []
+        # Parallel to `redirects`: the descriptor number before the operator, or "".
+        self.descriptors: list[str] = []
+        # Parallel to `redirects`: index in `commands()` of the owning simple command, -1 if it
+        # has no argv. Filled at each command boundary.
+        self.owners: list[int] = []
+        # (index in `redirects`, body start, start of the delimiter line, literal body) of every
+        # heredoc body read.
+        self.bodies: list[tuple[int, int, int, bool]] = []
+        self._descriptor = ""
 
     def commands(self) -> list[list[str]]:
         """argv каждой simple command текста по порядку."""
@@ -570,6 +591,7 @@ class StrictLexer:
                 self._add_word(argv)
             if not separator:
                 continue
+            self._own(len(commands) if argv else -1)
             if argv:
                 commands.append(argv)
                 self.links.append(link)
@@ -577,10 +599,15 @@ class StrictLexer:
             link += separator
         if self.heredocs:
             raise OutsideSubset
+        self._own(len(commands) if argv else -1)
         if argv:
             commands.append(argv)
             self.links.append(link)
         return commands
+
+    def _own(self, owner: int) -> None:
+        """Отдать перенаправления, прочитанные с прошлой границы команды, команде `owner`."""
+        self.owners.extend([owner] * (len(self.redirects) - len(self.owners)))
 
     def _skip_blanks(self) -> None:
         """Пропустить пробелы, табуляции и переносы `\\` + перевод строки."""
@@ -606,6 +633,7 @@ class StrictLexer:
         word = self._word()
         raw = self.text[start : self.index]
         if FD_NUMBER.fullmatch(raw) and self.text.startswith(("<", ">"), self.index):
+            self._descriptor = raw
             return
         if not argv and (word in RESERVED_WORDS or ASSIGNMENT_WORD.match(raw)):
             raise OutsideSubset
@@ -619,9 +647,13 @@ class StrictLexer:
         start = self.index
         word = self._word()
         self.redirects.append((operator, word))
+        self.descriptors.append(self._descriptor)
+        self._descriptor = ""
         if operator in ("<<", "<<-"):
             literal = any(char in self.text[start : self.index] for char in "'\"\\")
-            self.heredocs.append((word, operator == "<<-", literal))
+            self.heredocs.append(
+                (word, operator == "<<-", literal, len(self.redirects) - 1)
+            )
 
     def _word(self) -> str:
         """Прочитать слово с позиции и вернуть его значение без кавычек."""
@@ -678,13 +710,15 @@ class StrictLexer:
     def _read_bodies(self) -> None:
         """Прочитать тела ожидающих heredoc в порядке операторов со строки после перевода."""
         text = self.text
-        for delimiter, strip_tabs, literal in self.heredocs:
+        for delimiter, strip_tabs, literal, redirect in self.heredocs:
+            body = self.index
             while True:
                 if self.index >= len(text):
                     raise OutsideSubset  # no delimiter line
-                end = text.find("\n", self.index)
+                start = self.index
+                end = text.find("\n", start)
                 end = len(text) if end < 0 else end
-                line = text[self.index : end]
+                line = text[start:end]
                 self.index = end + 1
                 if strip_tabs:
                     line = line.lstrip("\t")
@@ -692,6 +726,7 @@ class StrictLexer:
                     break
                 if not literal and any(char in line for char in "$`\\"):
                     raise OutsideSubset
+            self.bodies.append((redirect, body, start, literal))
         self.heredocs = []
 
 
@@ -723,15 +758,19 @@ def strict_redirections(command: str) -> list[tuple[str, str]] | None:
     return lexer.redirects
 
 
-def fully_inert(command: str) -> bool:
-    """Строгий лексер принял команду, и каждая её simple command — инертная из allowlist."""
-    commands = strict_commands(command)
-    return commands is not None and all(
+def _inert(argv: list[str]) -> bool:
+    """Инертна ли simple command: программа allowlist по точному имени или текстовая подкоманда."""
+    return (
         argv[0] in INERT_PROGRAMS
         or tuple(argv[:2]) in TEXT_COMMANDS
         or tuple(argv[:3]) in TEXT_COMMANDS
-        for argv in commands
     )
+
+
+def fully_inert(command: str) -> bool:
+    """Строгий лексер принял команду, и каждая её simple command — инертная из allowlist."""
+    commands = strict_commands(command)
+    return commands is not None and all(_inert(argv) for argv in commands)
 
 
 def _merge_floor(command: str) -> bool:
@@ -768,14 +807,180 @@ def _names_merge(words: list[str]) -> bool:
     return False
 
 
+def _piped(link: str) -> bool:
+    """Есть ли в разделителях между командами конвейер `|` или `|&`."""
+    return "|" in link.replace("||", "")
+
+
+def _data_path(path: str) -> bool:
+    """Пишет ли вывод в обычный файл: `/dev/null` или путь без шаблона, устройства и дескриптора.
+
+    Не обычный файл — пустое имя после последнего `/`, шаблон (`*`, `?`, `[`, `{`), путь в
+    `/dev/` или `/proc/` и имя, которое после `cd` может оказаться дескриптором: цифры или
+    `stdin`, `stdout`, `stderr`.
+    """
+    if path == "/dev/null":
+        return True
+    name = path.rsplit("/", 1)[-1]
+    return not (
+        not name
+        or name.isdigit()
+        or name in STREAM_NAMES
+        or any(char in path for char in "*?[{\0")
+        or path.startswith(("/dev/", "/proc/"))
+    )
+
+
+def _written_files(
+    argv: list[str], redirects: list[tuple[str, str, str]], piped: bool
+) -> list[str] | None:
+    """Файлы, в которые simple command пишет свой heredoc как данные; None — она не писатель.
+
+    Писатель — ровно `cat` или `tee` вне конвейера, без слов с `{` (так bash пишет `{fd}>`).
+    Его перенаправления (оператор, цель, номер дескриптора) — heredoc без номера и вывод в файл
+    (`>`, `>>`, `>|`) без номера или с номером 1; хотя бы один вывод есть. Файлы — цели вывода,
+    а у `tee` ещё её операнды (после `--` — все слова); каждый файл — `_data_path`. `/dev/null`
+    в ответ не входит.
+    """
+    if argv[0] not in DATA_WRITERS or piped or any("{" in word for word in argv):
+        return None
+    files: list[str] = []
+    for operator, target, descriptor in redirects:
+        if operator in ("<<", "<<-") and not descriptor:
+            continue
+        if operator not in FILE_OUTPUTS or descriptor not in ("", "1"):
+            return None
+        files.append(target)
+    if not files:
+        return None
+    if argv[0] == "tee":
+        options = True
+        for word in argv[1:]:
+            if options and word == "--":
+                options = False
+            elif not options or word == "-" or not word.startswith("-"):
+                files.append(word)
+    if not all(_data_path(path) for path in files):
+        return None
+    return [path for path in files if path != "/dev/null"]
+
+
+def _named_elsewhere(owners: set[int], owner: int) -> bool:
+    """Есть ли среди `owners` часть команды не от `owner`."""
+    return len(owners) > (owner in owners)
+
+
+def _merge_outside_data(command: str) -> bool:
+    """Стоит ли merge-текст команды вне данных heredoc: True — запрет (fail closed).
+
+    Данные — тело heredoc `<<`/`<<-` с разделителем в кавычках и без номера дескриптора,
+    которое владелец пишет в файл (`_written_files`), если другая часть команды не называет
+    ни записанный файл, ни программу писателя, ни `exec`. Другая часть — слова и цели
+    перенаправлений других simple commands, кроме инертных читателей вне конвейера (их
+    перенаправления — чтение или `/dev/null`), и тела чужих heredoc. Файл называет подстрока
+    его имени или шаблон с `*`, `?`, `[`; любое слово с `{` называет всё; программу и `exec`
+    называет отдельное слово. Команда разрешается, только если строгий лексер её принял, вне
+    тел-данных merge-текста нет и слова строгого лексера merge не образуют.
+    """
+    lexer = StrictLexer(command)
+    try:
+        commands = lexer.commands()
+    except OutsideSubset:
+        return True
+    candidates = [
+        (lexer.owners[redirect], start, end)
+        for redirect, start, end, literal in lexer.bodies
+        if literal
+        and not lexer.descriptors[redirect]
+        and lexer.owners[redirect] >= 0
+        and _merge_floor(command[start:end])
+    ]
+    if not candidates:
+        return True
+    links = [*lexer.links, ""]
+    piped = [_piped(links[i]) or _piped(links[i + 1]) for i in range(len(commands))]
+    owned: list[list[tuple[str, str, str]]] = [[] for _ in commands]
+    # (owner, text, is the program word): every part of the command that may name something.
+    parts: list[tuple[int, str, bool]] = []
+    for (operator, target), descriptor, owner in zip(
+        lexer.redirects, lexer.descriptors, lexer.owners
+    ):
+        if owner < 0:
+            parts.append((owner, target, False))
+        else:
+            owned[owner].append((operator, target, descriptor))
+    for index, argv in enumerate(commands):
+        if (
+            _inert(argv)
+            and not piped[index]
+            and all(
+                operator in READ_REDIRECTIONS or target == "/dev/null"
+                for operator, target, _ in owned[index]
+            )
+        ):
+            continue  # an inert reader: it prints, counts or posts what it names
+        parts += [(index, word, position == 0) for position, word in enumerate(argv)]
+        parts += [(index, target, False) for _, target, _ in owned[index]]
+    parts += [
+        (lexer.owners[redirect], command[start:end], False)
+        for redirect, start, end, _ in lexer.bodies
+    ]
+    mine: dict[int, list[str]] = {}
+    braces: set[int] = set()
+    patterns: list[tuple[int, str]] = []
+    words: dict[str, set[int]] = {}
+    for owner, text, program_word in parts:
+        mine.setdefault(owner, []).append(text)
+        for token in PATTERN_SPLIT.split(text):
+            last = token.rsplit("/", 1)[-1]
+            if "{" in token:
+                braces.add(owner)
+            elif any(char in token for char in "*?["):
+                patterns.append((owner, last))
+            if last == "exec" or (last in DATA_WRITERS and not program_word):
+                words.setdefault(last, set()).add(owner)
+    # A name holds no "\0", so it occurs in the joined parts as often as in the parts together.
+    total = "\0".join(text for _, text, _ in parts)
+    data: dict[int, bool] = {}
+    for owner in dict.fromkeys(owner for owner, _, _ in candidates):
+        files = _written_files(commands[owner], owned[owner], piped[owner])
+        if files is None:
+            data[owner] = False
+            continue
+        names = [path.rsplit("/", 1)[-1] for path in files]
+        own = "\0".join(mine.get(owner, []))
+        data[owner] = not (
+            _named_elsewhere(braces, owner)
+            or any(
+                _named_elsewhere(words.get(word, set()), owner)
+                for word in ("exec", commands[owner][0])
+            )
+            or any(total.count(name) > own.count(name) for name in names)
+            or any(
+                other != owner and fnmatch.fnmatchcase(name, pattern)
+                for other, pattern in patterns
+                for name in names
+            )
+        )
+    rest: list[str] = []
+    position = 0
+    for owner, start, end in candidates:
+        if data[owner]:
+            rest.append(command[position:start])
+            position = end
+    rest.append(command[position:])
+    return _merge_floor("".join(rest)) or any(_names_merge(argv) for argv in commands)
+
+
 def merge_blocked(command: str) -> bool:
-    """Запретить ли команду: merge-текст вне полностью инертной команды или merge по словам.
+    """Запретить ли команду: merge-текст вне полностью инертной команды и вне данных heredoc
+    (`_merge_outside_data`) или merge по словам.
 
     Слова берутся у строгого лексера, а если он команду не принял — у shlex; так ловится
     merge, разбитый кавычками, которого нет в тексте команды.
     """
     if _merge_floor(command):
-        return not fully_inert(command)
+        return not fully_inert(command) and _merge_outside_data(command)
     commands = strict_commands(command)
     groups = [_shlex_words(command)] if commands is None else commands
     return any(_names_merge(words) for words in groups)
