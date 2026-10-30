@@ -5,6 +5,8 @@
 //! section 3).
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -78,6 +80,7 @@ impl Repo {
             json!({"supervisor": "harness-runtime", "timeout_seconds": timeout,
                    "stop_grace_seconds": grace, "poll_interval_seconds": 1}),
         );
+        common::pin_hook_policy(&mut brief, &Value::Null);
         let mut status = body("dispatch_status");
         status.insert(
             "launch".to_owned(),

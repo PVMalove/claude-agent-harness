@@ -5,6 +5,8 @@
 //! command is `podman`, the engine of the plan and of the `executions` row.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -12,11 +14,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use contracts::{ErrorCode, ExecutionState, PROTOCOL_VERSION, Request};
+use contracts::{ErrorCode, ExecutionState, FailureDomain, PROTOCOL_VERSION, Request};
 use engine::{Answer, Engine, Kind, Scripted};
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
-use state::canonical::{canonical_json, object_sha256, sha256_hex};
+use state::canonical::{canonical_json, compact_sha256, object_sha256, sha256_hex};
 use state::executions::{self, Execution};
 use supervisor::Supervisor;
 
@@ -125,6 +127,7 @@ impl Repo {
             "runtime_images".to_owned(),
             json!({"worker": WORKER_PIN, "proxy": null}),
         );
+        common::pin_hook_policy(&mut brief, &pinned_policy());
         let mut status = body("dispatch_status");
         status.insert(
             "launch".to_owned(),
@@ -261,6 +264,45 @@ impl Repo {
         executions::of_dispatch(&self.store(), DISPATCH).unwrap()
     }
 
+    /// Replace the stored brief of the dispatch by `change` of it.
+    fn rewrite_brief(&self, change: impl FnOnce(&mut Map<String, Value>)) {
+        let connection = self.store();
+        let (mut brief, _) = executions::dispatch_records(&connection, DISPATCH)
+            .unwrap()
+            .unwrap();
+        change(&mut brief);
+        connection
+            .execute(
+                "UPDATE dispatch SET body_json = ?2 WHERE id = ?1",
+                [DISPATCH, &Value::Object(brief).to_string()],
+            )
+            .unwrap();
+    }
+
+    fn operations(&self) -> i64 {
+        self.store()
+            .query_row("SELECT COUNT(*) FROM operations", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// A launch refused with `approval_mismatch` of `binding` that wrote nothing and asked no
+    /// engine.
+    fn assert_hook_policy_refused(&self, supervisor: &Arc<Supervisor>, binding: &str) {
+        let refused = self.launch(supervisor).unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::ApprovalMismatch, "{refused:?}");
+        assert_eq!(refused.domain, FailureDomain::Policy);
+        assert!(!refused.retryable);
+        assert_eq!(refused.facts["binding"], binding, "{refused:?}");
+        assert!(
+            refused.remedy.ends_with("nothing was written"),
+            "{refused:?}"
+        );
+        assert!(self.execution().is_none());
+        assert_eq!(self.operations(), 0);
+        assert!(self.engine.calls().is_empty(), "{:?}", self.engine.calls());
+    }
+
     fn wait_for(&self, supervisor: &Arc<Supervisor>, state: ExecutionState) -> Execution {
         let until = Instant::now() + Duration::from_secs(20);
         loop {
@@ -286,6 +328,109 @@ impl Drop for Repo {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// The `hook_policy` of the project the fixture brief was approved with.
+fn pinned_policy() -> Value {
+    json!({"profile": "standard", "escalations": [{"paths": ["src/*"], "profile": "strict"}]})
+}
+
+/// Pin `sha256` as the hook policy digest of the brief and its transition, and bind the approval
+/// to the result: every binding holds except the digest of the pinned snapshot policy.
+fn repin(brief: &mut Map<String, Value>, sha256: &str) {
+    brief.insert("hook_policy_sha256".to_owned(), json!(sha256));
+    brief["transition"]["hook_policy_sha256"] = json!(sha256);
+    common::bind_approval(brief);
+}
+
+#[test]
+fn a_hook_policy_digest_its_pinned_snapshot_does_not_hash_to_is_refused_before_any_write() {
+    let repo = Repo::new("hook-mismatch", 3600);
+    let other = common::policy_sha256(&json!({"profile": "strict"}));
+    repo.rewrite_brief(|brief| repin(brief, &other));
+    let supervisor = repo.supervisor(Vec::new());
+
+    repo.assert_hook_policy_refused(
+        &supervisor,
+        "orchestration_policy.configuration.project.hook_policy",
+    );
+}
+
+#[test]
+fn a_hook_policy_binding_changed_without_a_new_approval_is_refused_before_any_write() {
+    let repo = Repo::new("hook-rebound", 3600);
+    let supervisor = repo.supervisor(Vec::new());
+    let other = common::policy_sha256(&json!({"profile": "strict"}));
+
+    repo.rewrite_brief(|brief| {
+        brief.insert("hook_policy_sha256".to_owned(), json!(other));
+    });
+    repo.assert_hook_policy_refused(&supervisor, "transition.hook_policy_sha256");
+
+    repo.rewrite_brief(|brief| brief["transition"]["hook_policy_sha256"] = json!(other));
+    repo.assert_hook_policy_refused(&supervisor, "transition_digest");
+
+    repo.rewrite_brief(|brief| {
+        let digest = compact_sha256(&brief["transition"]);
+        brief.insert("transition_digest".to_owned(), json!(digest));
+    });
+    repo.assert_hook_policy_refused(&supervisor, "coordinator_approval.transition_digest");
+
+    repo.rewrite_brief(|brief| {
+        brief.insert("hook_policy_sha256".to_owned(), json!("A".repeat(64)));
+    });
+    repo.assert_hook_policy_refused(&supervisor, "hook_policy_sha256");
+}
+
+#[test]
+fn a_pinned_configuration_changed_without_a_new_approval_is_refused_before_any_write() {
+    let repo = Repo::new("hook-snapshot", 3600);
+    let supervisor = repo.supervisor(Vec::new());
+
+    repo.rewrite_brief(|brief| {
+        brief["orchestration_policy"]["configuration"]["project"]["hook_policy"] =
+            json!({"profile": "minimal"});
+    });
+    repo.assert_hook_policy_refused(
+        &supervisor,
+        "orchestration_policy.configuration.canonical_sha256",
+    );
+
+    repo.rewrite_brief(|brief| {
+        let configuration = &mut brief["orchestration_policy"]["configuration"];
+        let mut body = configuration.as_object().unwrap().clone();
+        body.remove("source_sha256");
+        body.remove("canonical_sha256");
+        configuration["canonical_sha256"] =
+            json!(sha256_hex(canonical_json(&Value::Object(body)).as_bytes()));
+    });
+    repo.assert_hook_policy_refused(&supervisor, "transition.configuration_sha256");
+}
+
+#[test]
+fn a_live_project_json_written_after_approval_neither_blocks_nor_rescues_a_launch() {
+    let repo = Repo::new("hook-live", 3600);
+    let live = json!({"profile": "strict"});
+    fs::create_dir_all(repo.root.join(".harness")).unwrap();
+    fs::write(
+        repo.root.join(".harness/project.json"),
+        json!({"hook_policy": live}).to_string(),
+    )
+    .unwrap();
+    let supervisor = repo.supervisor(Vec::new());
+    let (approved, _) = executions::dispatch_records(&repo.store(), DISPATCH)
+        .unwrap()
+        .unwrap();
+
+    repo.rewrite_brief(|brief| repin(brief, &common::policy_sha256(&live)));
+    repo.assert_hook_policy_refused(
+        &supervisor,
+        "orchestration_policy.configuration.project.hook_policy",
+    );
+
+    repo.rewrite_brief(|brief| *brief = approved);
+    let receipt = repo.launch(&supervisor).unwrap();
+    assert_eq!(receipt["container_id"], WORKER_ID);
 }
 
 #[test]

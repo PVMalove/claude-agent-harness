@@ -13,6 +13,9 @@
 //! job only.
 #![cfg(windows)]
 
+#[path = "../../supervisor/tests/common/mod.rs"]
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::os::windows::process::CommandExt;
@@ -126,6 +129,7 @@ impl Repo {
             json!({"supervisor": "harness-runtime", "timeout_seconds": timeout,
                    "stop_grace_seconds": grace, "poll_interval_seconds": 1}),
         );
+        common::pin_hook_policy(&mut brief, &Value::Null);
         let mut status = body("dispatch_status");
         status.insert(
             "launch".to_owned(),

@@ -6,6 +6,8 @@
 //! scripts of the `python` on PATH. Runs in the Windows CI job only.
 #![cfg(windows)]
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -84,6 +86,7 @@ impl Repo {
                 json!({"runtime_extension": "docker"}),
             );
         }
+        common::pin_hook_policy(&mut brief, &Value::Null);
         let mut status = body("dispatch_status");
         status.insert(
             "launch".to_owned(),

@@ -5,12 +5,149 @@
 //!
 //! The runtime does not validate profile names or apply the strict boundary; that stays in Python.
 //! It only refuses a shape Python could never have normalized.
+//!
+//! `verify` is the one check the launch and QA admissions share: the `hook_policy_sha256` of the
+//! brief holds only when the approval chain of the same brief binds it (the approval and the
+//! transition digest, the transition, the pinned configuration snapshot) and the policy of that
+//! snapshot hashes to it.
 
+use contracts::{ErrorBody, ErrorCode, FailureDomain};
 use serde_json::{Map, Value, json};
-use state::canonical::{compact_sha256, sort_key_json};
+use state::canonical::{canonical_json, compact_sha256, sha256_hex, sort_key_json};
 
 /// The profile of a project without a `hook_policy` key.
 const DEFAULT_PROFILE: &str = "standard";
+
+const MISMATCH_REMEDY: &str = "restore the approved brief and its approval binding, or approve a new dispatch with the current hook policy; nothing was written";
+
+/// Check the hook policy the approved `brief` pins against the facts of that brief alone; the
+/// live `.harness/project.json` and the environment are never read.
+///
+/// # Errors
+/// `approval_mismatch` (domain policy, not retryable) naming the `binding` that does not hold,
+/// with its `pinned` and `computed` values.
+pub fn verify(brief: &Map<String, Value>) -> Result<(), ErrorBody> {
+    let pinned = brief.get("hook_policy_sha256").and_then(Value::as_str);
+    let pinned = match pinned {
+        Some(pinned) if is_sha256(pinned) => pinned,
+        _ => {
+            return Err(mismatch(
+                "the approved brief pins no hook_policy_sha256 of 64 lower-case hex digits",
+                "hook_policy_sha256",
+                brief.get("hook_policy_sha256").cloned(),
+                None,
+            ));
+        }
+    };
+    let transition = brief.get("transition").filter(|value| value.is_object());
+    let bound = transition.and_then(|transition| transition.get("hook_policy_sha256"));
+    if bound.and_then(Value::as_str) != Some(pinned) {
+        return Err(mismatch(
+            "the transition of the brief does not bind its hook_policy_sha256",
+            "transition.hook_policy_sha256",
+            Some(json!(pinned)),
+            bound.cloned(),
+        ));
+    }
+    let transition = transition.unwrap_or(&Value::Null);
+    let digest = compact_sha256(transition);
+    for (binding, value) in [
+        ("transition_digest", brief.get("transition_digest")),
+        (
+            "coordinator_approval.transition_digest",
+            brief
+                .get("coordinator_approval")
+                .and_then(|approval| approval.get("transition_digest")),
+        ),
+    ] {
+        if value.and_then(Value::as_str) != Some(digest.as_str()) {
+            return Err(mismatch(
+                "the approval does not bind the transition the brief holds",
+                binding,
+                value.cloned(),
+                Some(json!(digest)),
+            ));
+        }
+    }
+    let configuration = brief
+        .get("orchestration_policy")
+        .and_then(|policy| policy.get("configuration"))
+        .and_then(Value::as_object);
+    let Some(configuration) = configuration else {
+        return Err(mismatch(
+            "the approved brief pins no configuration snapshot",
+            "orchestration_policy.configuration",
+            None,
+            None,
+        ));
+    };
+    let mut body = configuration.clone();
+    body.remove("source_sha256");
+    let stored = body.remove("canonical_sha256");
+    let canonical = sha256_hex(canonical_json(&Value::Object(body)).as_bytes());
+    if stored.as_ref().and_then(Value::as_str) != Some(canonical.as_str()) {
+        return Err(mismatch(
+            "the pinned configuration snapshot does not hash to its canonical_sha256",
+            "orchestration_policy.configuration.canonical_sha256",
+            stored,
+            Some(json!(canonical)),
+        ));
+    }
+    let bound = transition.get("configuration_sha256");
+    if bound.and_then(Value::as_str) != Some(canonical.as_str()) {
+        return Err(mismatch(
+            "the transition does not bind the pinned configuration snapshot",
+            "transition.configuration_sha256",
+            bound.cloned(),
+            Some(json!(canonical)),
+        ));
+    }
+    let project = configuration.get("project").and_then(Value::as_object);
+    let computed = project
+        .ok_or_else(|| "the pinned configuration holds no project".to_owned())
+        .and_then(|project| normalize(project.get("hook_policy")))
+        .map(|policy| sha256(&policy));
+    match computed {
+        Ok(computed) if computed == pinned => Ok(()),
+        Ok(computed) => Err(mismatch(
+            "the hook policy of the pinned configuration does not hash to the hook_policy_sha256 of the brief",
+            "orchestration_policy.configuration.project.hook_policy",
+            Some(json!(pinned)),
+            Some(json!(computed)),
+        )),
+        Err(problem) => Err(mismatch(
+            &format!("the hook policy of the pinned configuration cannot be normalized: {problem}"),
+            "orchestration_policy.configuration.project.hook_policy",
+            Some(json!(pinned)),
+            None,
+        )),
+    }
+}
+
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn mismatch(
+    message: &str,
+    binding: &str,
+    pinned: Option<Value>,
+    computed: Option<Value>,
+) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::ApprovalMismatch,
+        FailureDomain::Policy,
+        false,
+        message,
+        MISMATCH_REMEDY,
+    )
+    .with_fact("binding", binding)
+    .with_fact("pinned", pinned.unwrap_or(Value::Null))
+    .with_fact("computed", computed.unwrap_or(Value::Null))
+}
 
 /// The normalized policy of the `hook_policy` value: absent or `null` is the default profile
 /// without escalations; the paths and roles of an escalation are sorted without repeats, a

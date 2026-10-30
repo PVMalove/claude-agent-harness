@@ -30,7 +30,7 @@ use state::identity::{self, Identity};
 use state::time::{iso_from_micros, iso_now, now_micros};
 
 pub(crate) use crate::os::log_directory;
-use crate::{Supervisor, os};
+use crate::{Supervisor, hook_policy, os};
 
 /// The label that names the operation id of a launch in the environment of its process.
 pub const LABEL_OPERATION: &str = "HARNESS_OPERATION_ID";
@@ -266,6 +266,7 @@ fn admit(
         )
         .with_fact("expected_operation_id", expected));
     }
+    hook_policy::verify(brief)?;
     Ok(limits)
 }
 
