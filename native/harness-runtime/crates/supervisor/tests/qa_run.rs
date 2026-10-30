@@ -4,12 +4,14 @@
 //! the explicit stop, and the restart reconcile of a QA run no thread of the runtime holds.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use contracts::{ErrorCode, ExecutionState, PROTOCOL_VERSION, Request};
+use contracts::{ErrorCode, ExecutionState, FailureDomain, PROTOCOL_VERSION, Request};
 use engine::{Answer, Engine, Kind, Run, Scripted};
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
@@ -152,6 +154,7 @@ impl Repo {
             "runtime_images".to_owned(),
             json!({"worker": WORKER_PIN, "proxy": if hosts.is_empty() { Value::Null } else { json!(PROXY_PIN) }}),
         );
+        common::pin_hook_policy(&mut brief, &json!({"profile": "standard"}));
         let mut status = body("dispatch_status");
         status.insert("attempt".to_owned(), json!(1));
         for (table, record, state) in [
@@ -317,6 +320,40 @@ impl Repo {
             .query_row("SELECT COUNT(*) FROM operations", [], |row| row.get(0))
             .unwrap()
     }
+
+    /// The QA lane row as the store holds it.
+    fn lane(&self) -> Vec<Option<String>> {
+        self.store()
+            .query_row(
+                "SELECT revision, fencing_token, owner_kind, owner_id, expires_at, heartbeat_at
+                 FROM qa_lane WHERE id = 1",
+                [],
+                |row| {
+                    (0..6)
+                        .map(|index| {
+                            row.get::<_, rusqlite::types::Value>(index)
+                                .map(|value| Some(format!("{value:?}")))
+                        })
+                        .collect()
+                },
+            )
+            .unwrap()
+    }
+
+    /// Replace the stored brief of the dispatch by `change` of it.
+    fn rewrite_brief(&self, change: impl FnOnce(&mut Map<String, Value>)) {
+        let connection = self.store();
+        let (mut brief, _) = executions::dispatch_records(&connection, DISPATCH)
+            .unwrap()
+            .unwrap();
+        change(&mut brief);
+        connection
+            .execute(
+                "UPDATE dispatch SET body_json = ?2 WHERE id = ?1",
+                [DISPATCH, &Value::Object(brief).to_string()],
+            )
+            .unwrap();
+    }
 }
 
 impl Drop for Repo {
@@ -371,6 +408,66 @@ fn a_qa_run_of_a_wrong_attempt_operation_command_or_token_is_refused_without_a_w
     assert_eq!(repo.stored_operations(), before, "nothing was written");
     assert!(repo.execution().is_none());
     assert!(repo.runs().is_empty(), "no command ran");
+}
+
+#[test]
+fn a_qa_run_whose_hook_policy_does_not_match_its_approval_is_refused_without_a_write() {
+    let repo = Repo::new("hook-mismatch", &[]);
+    let supervisor = repo.supervisor();
+    let groups = gate(&[("gate-1", "make lint")]);
+    let before = (repo.stored_operations(), repo.lane());
+
+    // First the brief and its approval are re-pinned to another policy, so only the snapshot
+    // digest fails; then the brief alone is changed without its transition.
+    for (profile, rebind, binding) in [
+        (
+            "strict",
+            true,
+            "orchestration_policy.configuration.project.hook_policy",
+        ),
+        ("minimal", false, "transition.hook_policy_sha256"),
+    ] {
+        let other = common::policy_sha256(&json!({"profile": profile}));
+        repo.rewrite_brief(|brief| {
+            brief.insert("hook_policy_sha256".to_owned(), json!(other));
+            if rebind {
+                brief["transition"]["hook_policy_sha256"] = json!(other);
+                common::bind_approval(brief);
+            }
+        });
+
+        let refused = repo.run(&supervisor, &groups).unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::ApprovalMismatch, "{refused:?}");
+        assert_eq!(refused.domain, FailureDomain::Policy);
+        assert!(!refused.retryable);
+        assert_eq!(refused.facts["binding"], binding, "{refused:?}");
+        assert!(refused.remedy.ends_with("nothing was written"));
+        assert_eq!((repo.stored_operations(), repo.lane()), before);
+        assert!(repo.execution().is_none());
+        assert!(repo.engine.calls().is_empty(), "{:?}", repo.engine.calls());
+    }
+}
+
+#[test]
+fn a_live_project_json_hook_policy_change_after_approval_leaves_a_consistent_qa_run_admitted() {
+    let repo = Repo::new("hook-live", &[]);
+    fs::create_dir_all(repo.root.join(".harness")).unwrap();
+    fs::write(
+        repo.root.join(".harness/project.json"),
+        json!({"hook_policy": {"profile": "strict"}}).to_string(),
+    )
+    .unwrap();
+    let supervisor = repo.supervisor();
+    repo.attach("gate-1", Run::finish("lint ok\n", "", 0));
+
+    let receipt = repo
+        .run(&supervisor, &gate(&[("gate-1", "make lint")]))
+        .unwrap();
+
+    assert_eq!(receipt["kind"], "qa");
+    let exited = repo.wait_for(&supervisor, ExecutionState::Exited);
+    assert_eq!(exited.exit.unwrap()["commands"][0]["exit_code"], 0);
 }
 
 #[test]
