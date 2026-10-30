@@ -405,6 +405,10 @@ class IntegrationPrepareTests(unittest.TestCase):
         self.assertEqual(result["published_sha"], published["candidate"])
         self.assertEqual(result["target_sha"], target)
         self.assertEqual(result["integration_ref"], "master")
+        self.assertEqual(
+            result["candidate_tree_sha"],
+            _git(self.branch.repo, "rev-parse", f"{published['candidate']}^{{tree}}"),
+        )
         self.assertEqual(result["status"]["state"], "current")
         self.assertEqual(result["evidence_links"], [])
         source = result["source_evidence"]

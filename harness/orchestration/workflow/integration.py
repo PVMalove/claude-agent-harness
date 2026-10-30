@@ -66,7 +66,7 @@ from harness.orchestration.ledger.lifecycle import (
     IntegrationRecord,
     LifecycleLedger,
 )
-from harness.orchestration.workflow import history, pr_refresh
+from harness.orchestration.workflow import history, pr_refresh, release_gate
 
 INTEGRATION_RECORD_CONTRACT = 1
 # A refreshed candidate is confirmed only by a passed CI or local-QA check of its own pair: resolver
@@ -362,7 +362,12 @@ def _evidence_links(root: Path, record_id: str) -> list[JsonObject]:
 
 
 def _prepared(
-    record: JsonObject, links: list[JsonObject], observed: JsonObject, *, created: bool
+    record: JsonObject,
+    links: list[JsonObject],
+    observed: JsonObject,
+    *,
+    created: bool,
+    tree: str,
 ) -> JsonObject:
     identity = record["identity"]
     return {
@@ -374,6 +379,7 @@ def _prepared(
         "candidate_sha": identity["candidate_sha"],
         "published_sha": identity["published_sha"],
         "target_sha": identity["target_sha"],
+        "candidate_tree_sha": tree,
         "integration_ref": identity["integration_ref"],
         "source_evidence": record["source"],
         "evidence_links": [link["evidence_id"] for link in links],
@@ -442,6 +448,8 @@ def integration_prepare(args: argparse.Namespace) -> JsonObject:
             }
             _write_record(ledger, IntegrationRecord.from_dict(record))
             links, created = [], True
+        # A record prepared before the pair record existed gets its pair here as well.
+        pair = release_gate.record_pair(ledger, repo, publish["candidate"], target)
     state = (
         {
             "state": IntegrationTargetState.CURRENT,
@@ -450,7 +458,9 @@ def integration_prepare(args: argparse.Namespace) -> JsonObject:
         if created
         else _observe(repo, record["identity"])
     )
-    return _prepared(record, links, state, created=created)
+    return _prepared(
+        record, links, state, created=created, tree=pair["candidate_tree_sha"]
+    )
 
 
 def _load_record(root: Path, record_id: object) -> JsonObject:
@@ -772,6 +782,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
         links = _evidence_links(root, record["integration_record_id"])
         pair = pr_refresh.current_pair(root, record)
         refreshes = pr_refresh.refresh_records(root, record["integration_record_id"])
+        tree = release_gate.stored_tree(ledger, pair)
     identity = record["identity"]
     observed = _observe(repo, {**identity, "target_sha": pair["target_sha"]})
     state = observed["state"]
@@ -798,6 +809,7 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
         "integration_ref": identity["integration_ref"],
         "target_sha": pair["target_sha"],
         "original_target_sha": identity["target_sha"],
+        "candidate_tree_sha": tree,
         "state": state,
         "integration_tip": tip,
         "refresh_required": state != IntegrationTargetState.CURRENT,

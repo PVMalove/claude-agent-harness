@@ -85,7 +85,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
-from harness.orchestration.workflow import failure_domains, rebase
+from harness.orchestration.workflow import failure_domains, rebase, release_gate
 from harness.orchestration.workflow.attention import _flag_stale_dispatch
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
@@ -1044,6 +1044,29 @@ def probe_dispatch_runtime(args: argparse.Namespace) -> JsonObject:
     }
 
 
+def _record_publish_pair(
+    repo: Path, root: Path, ledger: LifecycleLedger, dispatch_id: str
+) -> None:
+    """Record the Release Gate pair of a publish with accepted QA before its push is decided.
+
+    A block of its own: in the runtime-store epoch the pair is in the store before the runtime
+    judges its evidence. Anything else this block finds wrong is left to the publish checks,
+    which refuse it with their own remedy."""
+    with _ledger_lock(ledger):
+        dispatch = _load_dispatch(root, dispatch_id)
+        if dispatch.get("purpose") != "publish":
+            return
+        batch = _load_batch(root, dispatch["batch_id"])
+        try:
+            _accepted_qa_for_candidate(root, batch, dispatch["candidate_commit"])
+        except CoordinatorError:
+            return
+        pair = release_gate.publish_pair(batch, dispatch)
+        release_gate.record_pair(
+            ledger, repo, pair["candidate_sha"], pair["target_sha"]
+        )
+
+
 def publish_dispatch(args: argparse.Namespace) -> JsonObject:
     """Push one QA-accepted candidate through an approved publish-only brief."""
     repo = _repo(args)
@@ -1060,6 +1083,7 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             remedy="add the named remote to this repository (git remote add) before publishing",
         )
     ledger = LifecycleLedger(root)
+    _record_publish_pair(repo, root, ledger, args.dispatch)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])

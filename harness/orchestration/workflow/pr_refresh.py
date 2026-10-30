@@ -45,7 +45,7 @@ from harness.orchestration.ledger.lifecycle import (
     IntegrationRefreshRecord,
     LifecycleLedger,
 )
-from harness.orchestration.workflow import integration
+from harness.orchestration.workflow import integration, release_gate
 
 REFRESH_RECORD_CONTRACT = 1
 # One fetch, push or rebase of the refresh: the route holds the ledger lock, so a hung remote or
@@ -360,6 +360,8 @@ def write_refresh_record(
         / IntegrationRefreshRecord.directory
         / f"{document['refresh_id']}.json"
     )
+    # The new pair of the Release Gate: a refresh and an accepted resolution move the candidate.
+    release_gate.record_pair(ledger, repo, new_candidate, tip)
     if recorded.is_file():
         return _read_object(recorded, "integration refresh record")
     _write_record(ledger, IntegrationRefreshRecord.from_dict(document))
