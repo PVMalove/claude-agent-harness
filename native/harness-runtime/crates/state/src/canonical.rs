@@ -5,16 +5,84 @@
 //! `record_sha256`, `brief_sha256` and `report_sha256` of a record hash that text. This module
 //! writes the same bytes, so a hash computed in either language holds in the other. The golden
 //! fixture in `tests/fixtures` is checked by both languages.
+//!
+//! The same writer also gives the two other forms Python hashes or compares approval facts in:
+//! the compact form of `operational_guards._digest` and `hook_policy_sha256`
+//! (`json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))`) and the
+//! default `json.dumps(value, sort_keys=True)`, the sort key of hook policy escalations. The
+//! vectors of `tests/fixtures/digest_golden.json` are checked by both languages.
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+/// How a form of `json.dumps` with `sort_keys=True` lays the text out.
+#[derive(Clone, Copy)]
+struct Style {
+    /// `indent=2`: every member on its own line.
+    indent: bool,
+    item_separator: &'static str,
+    key_separator: &'static str,
+    /// `ensure_ascii=True`: everything outside U+0020..U+007E is written as `\uXXXX`.
+    ascii: bool,
+}
+
+const LEDGER: Style = Style {
+    indent: true,
+    item_separator: ",",
+    key_separator: ": ",
+    ascii: false,
+};
+const COMPACT: Style = Style {
+    indent: false,
+    item_separator: ",",
+    key_separator: ":",
+    ascii: false,
+};
+const SORT_KEY: Style = Style {
+    indent: false,
+    item_separator: ", ",
+    key_separator: ": ",
+    ascii: true,
+};
+
 /// The canonical text of `value`, with the final line feed.
 pub fn canonical_json(value: &Value) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, 0);
+    write_value(&mut out, value, 0, LEDGER);
     out.push('\n');
     out
+}
+
+/// The compact text of `value`, as `json.dumps(value, ensure_ascii=False, sort_keys=True,
+/// separators=(",", ":"))` writes it.
+pub fn compact_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, 0, COMPACT);
+    out
+}
+
+/// The SHA-256 of the compact text of `value`: `operational_guards._digest` of Python, the digest
+/// a transition, its bindings and a hook policy are approved with.
+pub fn compact_sha256(value: &Value) -> String {
+    sha256_hex(compact_json(value).as_bytes())
+}
+
+/// The text `json.dumps(value, sort_keys=True)` writes: separators `", "` and `": "`, and
+/// `ensure_ascii=True`, so a character outside U+0020..U+007E is a `\uXXXX` escape and an astral
+/// character a surrogate pair. Python sorts hook policy escalations by this text.
+pub fn sort_key_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, 0, SORT_KEY);
+    out
+}
+
+fn separate(out: &mut String, index: usize, depth: usize, style: Style) {
+    if index > 0 {
+        out.push_str(style.item_separator);
+    }
+    if style.indent {
+        indent(out, depth);
+    }
 }
 
 fn indent(out: &mut String, depth: usize) {
@@ -24,24 +92,23 @@ fn indent(out: &mut String, depth: usize) {
     }
 }
 
-fn write_value(out: &mut String, value: &Value, depth: usize) {
+fn write_value(out: &mut String, value: &Value, depth: usize, style: Style) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(true) => out.push_str("true"),
         Value::Bool(false) => out.push_str("false"),
         Value::Number(number) => out.push_str(&python_number(&number.to_string())),
-        Value::String(text) => write_string(out, text),
+        Value::String(text) => write_string(out, text, style.ascii),
         Value::Array(items) if items.is_empty() => out.push_str("[]"),
         Value::Array(items) => {
             out.push('[');
             for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                indent(out, depth + 1);
-                write_value(out, item, depth + 1);
+                separate(out, index, depth + 1, style);
+                write_value(out, item, depth + 1, style);
             }
-            indent(out, depth);
+            if style.indent {
+                indent(out, depth);
+            }
             out.push(']');
         }
         Value::Object(members) if members.is_empty() => out.push_str("{}"),
@@ -51,23 +118,24 @@ fn write_value(out: &mut String, value: &Value, depth: usize) {
             keys.sort();
             out.push('{');
             for (index, key) in keys.into_iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                indent(out, depth + 1);
-                write_string(out, key);
-                out.push_str(": ");
-                write_value(out, &members[key], depth + 1);
+                separate(out, index, depth + 1, style);
+                write_string(out, key, style.ascii);
+                out.push_str(style.key_separator);
+                write_value(out, &members[key], depth + 1, style);
             }
-            indent(out, depth);
+            if style.indent {
+                indent(out, depth);
+            }
             out.push('}');
         }
     }
 }
 
 /// A string as `json.dumps(..., ensure_ascii=False)` writes it: only `"`, `\` and the control
-/// characters below U+0020 are escaped. U+007F and everything non-ASCII stay as they are.
-fn write_string(out: &mut String, text: &str) {
+/// characters below U+0020 are escaped. U+007F and everything non-ASCII stay as they are. With
+/// `ascii`, as `ensure_ascii=True` writes it: every other character outside U+0020..U+007E is a
+/// lower-case `\uXXXX` escape, an astral one the escapes of its UTF-16 surrogate pair.
+fn write_string(out: &mut String, text: &str, ascii: bool) {
     out.push('"');
     for character in text.chars() {
         match character {
@@ -79,6 +147,12 @@ fn write_string(out: &mut String, text: &str) {
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
             control if control < ' ' => out.push_str(&format!("\\u{:04x}", u32::from(control))),
+            other if ascii && !(' '..='~').contains(&other) => {
+                let mut units = [0_u16; 2];
+                for unit in other.encode_utf16(&mut units) {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
             other => out.push(other),
         }
     }
