@@ -12,16 +12,22 @@
 //! After a restart the job is opened by the name the intent recorded. An intent is adopted by the
 //! earliest live member of its job, whose threads are resumed, because the launch may have died
 //! before its resume; a job without a name or a live member makes it `lost`. A recorded leader is
-//! observed by its pid and creation time, and its job by the number of its members
-//! (`job::outcome`); a live leader in its job is held by this runtime until its row ends, so its
-//! exit code stays readable after it ends.
+//! observed by its pid and creation time, and its job by the number of the live members of the
+//! execution (`job::outcome`); a live leader in its job is held by this runtime until its row
+//! ends, so its exit code stays readable after it ends.
+//!
+//! The hidden console has a console host, `conhost.exe` of the system directory, that runs as a
+//! member of the job and ends after the last process attached to the console. It is told apart by
+//! its executable image and is never a member of the execution (`members`), so it never keeps
+//! an execution whose leader and descendants ended running, and never proves a stop wrong.
 //!
 //! A stop at the deadline sends `CTRL_BREAK` to the recorded process group through the
 //! ctrl-break helper (`harness-runtime ctrl-break`, see `ctrl_break`): no runtime shares the
 //! console of an execution, so a short process without a console attaches to the hidden console
-//! of a live member of the job and generates the event there. After `stop_grace_seconds`
-//! `TerminateJobObject` ends every member that is left with exit code 137. The stop is proven when
-//! the job is empty and the leader is gone.
+//! of a live member of the execution and generates the event there. After `stop_grace_seconds`
+//! `TerminateJobObject` ends every member that is left, the console host included, with exit code
+//! 137. The stop is proven when the job holds no live member of the execution and the leader is
+//! gone.
 
 use std::io::{self, Read};
 use std::os::windows::process::CommandExt;
@@ -32,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use platform_ffi::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS, Job, JobAccess,
-    Process, create_private_file, current_user_sid, send_ctrl_break,
+    Process, create_private_file, current_user_sid, send_ctrl_break, system_directory,
 };
 use serde_json::{Map, Value, json};
 use state::executions::Execution;
@@ -184,6 +190,39 @@ pub(crate) fn find(execution: &Execution) -> io::Result<Option<(i64, String)>> {
     Ok(Some((i64::from(leader.pid()), created.to_string())))
 }
 
+/// The live members of `job`, with the console host told apart by its executable image
+/// (`job::is_console_host`). The recorded leader `leader` is never the console host. A member that
+/// has ended or left the job since the list is left out.
+///
+/// # Errors
+/// The error of the OS: the job cannot be listed, or a member or the system directory cannot be
+/// read. Nothing is proven then.
+fn members(job: &Job, leader: Option<u32>) -> io::Result<Vec<job::Member>> {
+    let system_dir = system_directory()?;
+    let system_dir = system_dir.to_string_lossy();
+    let mut members = Vec::new();
+    for pid in job.processes()? {
+        let Some(process) = Process::open(pid)? else {
+            continue;
+        };
+        if process.exit_code()?.is_some() || !job.contains(&process)? {
+            continue;
+        }
+        let console_host = if Some(pid) == leader {
+            false
+        } else {
+            match process.image_path() {
+                Ok(image) => job::is_console_host(&image.to_string_lossy(), &system_dir),
+                // A member that ended after the check above has no image any more.
+                Err(_) if process.exit_code()?.is_some() => continue,
+                Err(err) => return Err(err),
+            }
+        };
+        members.push(job::Member { pid, console_host });
+    }
+    Ok(members)
+}
+
 /// Observe the recorded leader of `execution` and its job object, by the table of
 /// `job::outcome`. A leader that ended while this runtime held it leaves its exit code as the
 /// exit evidence.
@@ -195,9 +234,9 @@ pub(crate) fn observe(
     let opened = Job::open(&job_name(execution), JobAccess::Control);
     let job_seen = match &opened {
         Ok(None) => JobSeen::NameAbsent,
-        Ok(Some(job)) => job.active_processes().map_or_else(
+        Ok(Some(job)) => members(job, u32::try_from(recorded.pid).ok()).map_or_else(
             |err| JobSeen::Unknown(format!("the job object cannot be observed: {err}")),
-            JobSeen::Members,
+            |members| JobSeen::Members(job::execution_members(&members)),
         ),
         Err(err) => JobSeen::Unknown(format!("the job object cannot be opened: {err}")),
     };
@@ -424,22 +463,22 @@ impl Group {
         })
     }
 
-    /// Whether a process of the job has not ended.
+    /// Whether a member of the execution in the job has not ended; the console host is none.
     ///
     /// # Errors
     /// Why the job cannot be observed.
     pub(crate) fn members_alive(&self) -> Result<bool, String> {
         self.job.as_ref().map_or(Ok(false), |job| {
-            job.active_processes()
-                .map(|members| members > 0)
+            members(job, u32::try_from(self.leader.pid).ok())
+                .map(|members| job::execution_members(&members) > 0)
                 .map_err(|err| format!("the job object cannot be observed: {err}"))
         })
     }
 
     /// The first step of a stop: `CTRL_BREAK` to the recorded group, through the ctrl-break
-    /// helper, which runs without a console and attaches to the one of a live member of the job.
-    /// A `CTRL_BREAK` that was not delivered is a fact of the stop, not its failure: the kill after
-    /// the grace and the empty job prove the stop.
+    /// helper, which runs without a console and attaches to the one of a live member of the
+    /// execution. A `CTRL_BREAK` that was not delivered is a fact of the stop, not its failure: the
+    /// kill after the grace and a job without a live member of the execution prove the stop.
     ///
     /// # Errors
     /// Never: the outcome is the fact `ctrl_break` (`delivered`, `no-member` or `failed`, with
@@ -557,11 +596,12 @@ pub enum CtrlBreak {
 }
 
 /// The ctrl-break helper (`harness-runtime ctrl-break`): send `CTRL_BREAK` to the process group
-/// `group` on the console of a live member of the job object `job`. The member is the leader
-/// `pid` when its creation time is `created` and it is a live member of the job, else the first
-/// live member of the job: a process outside the job, such as one that reuses the pid of the
-/// leader, is never touched. Only a process without a console of its own calls this, because it
-/// attaches to the console of the member.
+/// `group` on the console of a live member of the execution in the job object `job`. The member
+/// is the leader `pid` when its creation time is `created` and it is a live member of the job,
+/// else the first live member of the job that is not the console host, which no process can
+/// attach to: a process outside the job, such as one that reuses the pid of the leader, is never
+/// touched. Only a process without a console of its own calls this, because it attaches to the
+/// console of the member.
 pub fn ctrl_break(job: &str, group: u32, pid: u32, created: &str) -> CtrlBreak {
     if let Err(err) = platform_ffi::ignore_ctrl_events() {
         return CtrlBreak::Failed(format!("the helper cannot ignore console events: {err}"));
@@ -581,10 +621,11 @@ pub fn ctrl_break(job: &str, group: u32, pid: u32, created: &str) -> CtrlBreak {
             && live(leader)
     });
     let member = leader.or_else(|| {
-        job.processes()
+        members(&job, None)
             .ok()?
             .into_iter()
-            .filter_map(|pid| Process::open(pid).ok().flatten())
+            .filter(|member| !member.console_host)
+            .filter_map(|member| Process::open(member.pid).ok().flatten())
             .find(|process| live(process))
     });
     let Some(member) = member else {

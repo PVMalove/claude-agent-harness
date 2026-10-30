@@ -1,16 +1,23 @@
 //! The pure logic of the Windows supervisor (ADR 0022, sections 2, 3 and 5): the name of the job
-//! object of an execution, and what an observation of its leader and its job means. It makes no
-//! system call, so it builds and is tested on every platform.
+//! object of an execution, which members of the job belong to the execution, and what an
+//! observation of its leader and its job means. It makes no system call, so it builds and is
+//! tested on every platform.
 //!
-//! The table of an observation:
+//! The hidden console of an execution has a console host, `conhost.exe` of the system directory,
+//! that Windows starts for it inside the job. It serves the console and ends after its last
+//! client; it is a member of the job, but never a member of the execution (`execution_members`).
+//!
+//! The table of an observation; a member is a live member of the execution, the console host is
+//! none:
 //! - the leader runs with its recorded pid and creation time and is in the job: `running`;
 //! - the leader runs outside its job, or the job has no member or no name: `unknown`, because the
 //!   two observations contradict each other;
 //! - the leader is gone (no process, another process at its pid, or ended) and a member of the job
 //!   runs: `running`, until the members end or the deadline stops them;
-//! - the leader ended while this runtime held a handle to it, and the job is empty: `exited` with
-//!   the exit code of that handle;
-//! - the leader is gone without a held handle and the job is empty, or the job has no name: `lost`;
+//! - the leader ended while this runtime held a handle to it, and the job has no member: `exited`
+//!   with the exit code of that handle;
+//! - the leader is gone without a held handle and the job has no member, or the job has no name:
+//!   `lost`;
 //! - an observation that failed: `unknown`, and the lease stays held.
 
 use contracts::ExecutionState;
@@ -22,6 +29,31 @@ pub const PREFIX: &str = r"Global\harness-runtime-execution-";
 /// The name of the job object of the execution `operation_id`: the same for every runtime.
 pub fn name(operation_id: &str) -> String {
     format!("{PREFIX}{operation_id}")
+}
+
+/// The file name of the console host of Windows.
+const CONSOLE_HOST: &str = "conhost.exe";
+
+/// A live member of the job object of an execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub pid: u32,
+    /// Whether it is the console host of the hidden console of the execution.
+    pub console_host: bool,
+}
+
+/// Whether the executable image `image` (a full Win32 path) is the console host: `conhost.exe` in
+/// the system directory `system_dir`, without regard to case. Another directory or another name,
+/// such as `OpenConsole.exe`, is not.
+pub fn is_console_host(image: &str, system_dir: &str) -> bool {
+    let host = format!("{}\\{CONSOLE_HOST}", system_dir.trim_end_matches('\\'));
+    image.to_lowercase() == host.to_lowercase()
+}
+
+/// The number of the live members of the execution among `members`: the console host is none.
+pub fn execution_members(members: &[Member]) -> u32 {
+    let count = members.iter().filter(|member| !member.console_host).count();
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// What the runtime sees of the recorded leader of an execution.
@@ -59,7 +91,7 @@ impl LeaderSeen {
 pub enum JobSeen {
     /// No object has the name: no handle to the job is open anywhere.
     NameAbsent,
-    /// The job exists and holds this many processes that have not ended.
+    /// The job exists and holds this many live members of the execution (`execution_members`).
     Members(u32),
     /// The OS gave no answer.
     Unknown(String),
@@ -211,6 +243,81 @@ mod tests {
                 "{leader:?}"
             );
         }
+    }
+
+    const SYSTEM: &str = r"C:\WINDOWS\system32";
+
+    fn member(pid: u32, console_host: bool) -> Member {
+        Member { pid, console_host }
+    }
+
+    #[test]
+    fn the_console_host_is_conhost_of_the_system_directory_in_any_case() {
+        assert!(is_console_host(r"C:\Windows\System32\conhost.exe", SYSTEM));
+        assert!(is_console_host(r"c:\windows\system32\CONHOST.EXE", SYSTEM));
+        assert!(is_console_host(
+            r"C:\Windows\System32\conhost.exe",
+            r"C:\Windows\System32\"
+        ));
+        for image in [
+            r"C:\Windows\SysWOW64\conhost.exe",
+            r"D:\Windows\System32\conhost.exe",
+            r"C:\Windows\System32\sub\conhost.exe",
+            r"C:\tools\conhost.exe",
+            r"C:\Windows\System32\OpenConsole.exe",
+            r"C:\Windows\System32\conhost.exe.bak",
+            r"C:\Windows\System32\xconhost.exe",
+            r"C:\Python312\python.exe",
+            "conhost.exe",
+        ] {
+            assert!(!is_console_host(image, SYSTEM), "{image}");
+        }
+    }
+
+    #[test]
+    fn the_console_host_is_never_a_member_of_the_execution() {
+        assert_eq!(execution_members(&[]), 0);
+        assert_eq!(execution_members(&[member(7, true)]), 0);
+        assert_eq!(
+            execution_members(&[member(7, true), member(8, false), member(9, false)]),
+            2
+        );
+    }
+
+    #[test]
+    fn a_held_leader_that_ended_beside_a_live_console_host_is_exited() {
+        let only_the_host = JobSeen::Members(execution_members(&[member(7, true)]));
+
+        assert_eq!(
+            outcome(
+                &LeaderSeen::Exited {
+                    code: 5,
+                    held: true
+                },
+                &only_the_host
+            ),
+            Outcome::Exited(5)
+        );
+        for leader in [
+            LeaderSeen::Absent,
+            LeaderSeen::PidReused,
+            LeaderSeen::Exited {
+                code: 5,
+                held: false,
+            },
+        ] {
+            assert_eq!(
+                outcome(&leader, &only_the_host),
+                Outcome::Lost,
+                "{leader:?}"
+            );
+        }
+        let with_a_descendant =
+            JobSeen::Members(execution_members(&[member(7, true), member(8, false)]));
+        assert_eq!(
+            outcome(&LeaderSeen::Absent, &with_a_descendant),
+            Outcome::Running
+        );
     }
 
     #[test]

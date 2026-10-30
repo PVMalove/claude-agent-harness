@@ -2,7 +2,8 @@
 //! executable (ADR 0022, sections 2, 3 and 5): a deadline stop sends `CTRL_BREAK` and an
 //! execution that obeys ends without `TerminateJobObject`, one that ignores it ends by
 //! `TerminateJobObject` after the grace, and an execution outlives a runtime that dies. A new
-//! runtime finds its job by name, records its exit code from the handle it holds, finishes a stop
+//! runtime finds its job by name, records its exit code from the handle it holds even while the
+//! console host of its hidden console lives on in the job, finishes a stop
 //! the dead runtime began, adopts the earliest member of the job of an intent without a second
 //! launch, records an intent without a process `lost`, and never signals a process that holds the
 //! pid of a forged identity.
@@ -32,7 +33,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use contracts::{ExecutionState, PROTOCOL_VERSION, Request};
-use platform_ffi::{CREATE_NEW_PROCESS_GROUP, Job, JobAccess, Process};
+use platform_ffi::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, Job, JobAccess, Process};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use state::canonical::{canonical_json, object_sha256, sha256_hex};
@@ -286,6 +287,22 @@ impl Drop for Repo {
     }
 }
 
+/// The first line `child` prints on its piped stdout, waited for up to `within`.
+fn first_line(child: &mut Child, within: Duration) -> String {
+    let (send, lines) = mpsc::channel();
+    forward(child.stdout.take().unwrap(), false, send);
+    lines.recv_timeout(within).map_or_else(
+        |err| {
+            panic!(
+                "the process printed no line within {} s ({err}); try_wait: {:?}",
+                within.as_secs(),
+                child.try_wait()
+            )
+        },
+        |(_, line)| line,
+    )
+}
+
 /// Send every line of `pipe` to `lines`, marked `stderr` or not, until its end.
 fn forward(pipe: impl Read + Send + 'static, stderr: bool, lines: Sender<(bool, String)>) {
     std::thread::spawn(move || {
@@ -499,6 +516,76 @@ fn an_execution_outlives_its_runtime_and_a_new_runtime_records_its_exit_code() {
     assert_eq!(exit["exit_code"], 5, "{exit}");
     assert_eq!(exit["source"], "process-handle");
     assert!(exited.lease_released_at.is_some());
+    let _ = fs::remove_file(&marker);
+}
+
+#[test]
+fn a_new_runtime_records_the_exit_of_a_leader_whose_console_host_lives_on() {
+    let marker = std::env::temp_dir().join(format!("hr-win-host-marker-{}", std::process::id()));
+    let _ = fs::remove_file(&marker);
+    let script = format!(
+        "import os, sys, time\nwhile not os.path.exists(r'{}'): time.sleep(0.05)\nsys.exit(5)",
+        marker.display()
+    );
+    let repo = Repo::new("host", &script, 300, 5);
+    let mut runtime = Runtime::start(&repo, None);
+    let leader = leader_pid(&runtime.receipt());
+    runtime.kill();
+    // The test holds the job, so its name outlives the leader.
+    let job = Job::open(&repo.job_name(), JobAccess::Query)
+        .unwrap()
+        .unwrap();
+    windows_job::wait_for(
+        &job,
+        "host before the exit",
+        &[
+            Expected::python("leader", leader),
+            Expected::console_host_of(leader),
+        ],
+        20,
+    );
+    // A process outside the job attaches to the hidden console of the leader, so its console host
+    // lives on after the leader.
+    let holder_script = format!(
+        "import ctypes, time\nkernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\nprint('ATTACHED' if kernel32.AttachConsole({leader}) else 'FAILED %d' % ctypes.get_last_error(), flush=True)\nwhile True: time.sleep(0.1)"
+    );
+    let mut holder = Reaper(
+        Command::new("python")
+            .args(["-c", &holder_script])
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(first_line(&mut holder.0, LINE_WAIT), "ATTACHED");
+    let supervisor = supervisor_of(repo.state());
+    supervisor.reconcile_all();
+    let running = repo.execution();
+    assert_eq!(
+        running.state,
+        ExecutionState::Running,
+        "{}",
+        repo.seen(&running)
+    );
+    assert_eq!(running.lease_released_at, None);
+
+    fs::write(&marker, "").unwrap();
+
+    let exited = repo.wait_for(ExecutionState::Exited, 30, Some(&supervisor));
+    let exit = exited.exit.unwrap();
+    assert_eq!(exit["exit_code"], 5, "{exit}");
+    assert_eq!(exit["source"], "process-handle", "{exit}");
+    assert!(exited.lease_released_at.is_some());
+    // The console host of the leader still runs in the job: the execution ended without it.
+    let after = windows_job::members(&job);
+    windows_job::print("host after the exit", &after);
+    assert!(
+        windows_job::composed_of(&after, &[Expected::console_host_of(leader)]),
+        "{}",
+        windows_job::text(&after)
+    );
     let _ = fs::remove_file(&marker);
 }
 
