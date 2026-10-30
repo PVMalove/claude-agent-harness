@@ -20,9 +20,10 @@
 //! (`job::name`) and created without `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the leader gets its own
 //! handle to the job, so the name lives while the leader does. The identity is the pid and the
 //! creation time, the receipt names the job. A runtime after a restart opens the job by its name:
-//! it adopts the earliest member of the job of an intent, and observes a recorded leader and its
-//! job by the table of `job::outcome`. Windows serves `execution.launch` and `execution.observe`
-//! only; containers and QA runs stay on Linux.
+//! it adopts the member of the job of an intent that the runtime of the intent launched
+//! (`job::leader_of`), and observes a recorded leader and the members of the execution in its job,
+//! the console host excluded, by the table of `job::outcome`. Windows serves `execution.launch`
+//! and `execution.observe` only; containers and QA runs stay on Linux.
 //!
 //! A brief whose `runtime_access` names the built-in `docker` extension runs as a `container`
 //! execution (ADR 0022, section 4): the runtime checks the plan's mounts against the engine
