@@ -38,5 +38,5 @@ Run this project's quality gate and report the result. Nothing else — no resta
    the log. Do not run the remaining commands. Read a failure log only when the developer needs
    that particular diagnostic evidence. The wrapper works with every quality command; do not add
    a pytest JSON/XML reporting flag unless that command already owns and documents that artifact.
-3. If every command succeeds, record the pass marker yourself: run `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/record-qa-gate-pass.sh"`. Don't rely on the `mark-qa-gate-passed.sh` PostToolUse hook alone for this — this skill runs forked (see `context: fork` above), and the hook isn't guaranteed to fire for Bash calls made inside that fork.
+3. If every command succeeds, record the pass marker yourself: from the current checkout, run `bash "${CLAUDE_PROJECT_DIR:-$(git worktree list --porcelain | sed -n '1s/^worktree //p')}/.claude/hooks/record-qa-gate-pass.sh"`. A runtime that does not set `CLAUDE_PROJECT_DIR` takes the script from the main worktree, where the gitignored `.claude/hooks/` is installed. Don't rely on the `mark-qa-gate-passed.sh` PostToolUse hook alone for this — this skill runs forked (see `context: fork` above), and the hook isn't guaranteed to fire for Bash calls made inside that fork.
 4. Report a compact one-line PASS summary only — do not paste the passing output.

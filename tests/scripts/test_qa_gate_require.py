@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -22,6 +24,9 @@ HOOK = (
     / "hooks"
     / "qa-gate-state.py"
 )
+ROOT = Path(__file__).resolve().parents[2]
+SKILLS = ROOT / "skills" / "first-party" / "engineering"
+DESCRIPTIONS = ROOT / "docs" / "skills"
 BRANCH = "feature/issue-7-demo"
 QA = "make verify"
 # The marker's state is `<HEAD>:<hash of git diff HEAD>`; a clean tree hashes the empty diff.
@@ -257,3 +262,91 @@ def test_the_marker_is_written_in_a_linked_worktree_without_a_project_dir(
     assert project.mark().returncode == 0
     assert (project.linked / ".claude" / ".qa-gate" / "passed").is_file()
     assert project.require().returncode == 0
+
+
+def skill_record_command(skill: str) -> str:
+    """The exact command the skill gives for recording the qa-gate pass marker."""
+    text = (SKILLS / skill / "SKILL.md").read_text(encoding="utf-8")
+    commands: list[str] = re.findall(
+        r"`(bash [^`]*record-qa-gate-pass\.sh[^`]*)`", text
+    )
+    (command,) = commands
+    return command
+
+
+def runtime_require_command(template: str) -> str:
+    """The `require-qa-gate` Bash hook command a runtime's hooks template installs."""
+    path = HOOK.parents[1] / template
+    groups = json.loads(path.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    commands: list[str] = [
+        hook["command"]
+        for group in groups
+        if group["matcher"] == "Bash"
+        for hook in group["hooks"]
+        if "require-qa-gate" in hook["command"]
+    ]
+    (command,) = commands
+    return command
+
+
+@pytest.mark.parametrize("skill", ["qa-gate", "to-pull-requests"])
+@pytest.mark.parametrize(
+    ("template", "project_dir"),
+    [
+        pytest.param("settings.local.json.tmpl", True, id="first-runtime"),
+        pytest.param("codex-hooks.json.tmpl", False, id="second-runtime"),
+    ],
+)
+def test_the_skill_records_the_marker_that_opens_the_pr_in_each_runtime(
+    project: Project, skill: str, template: str, project_dir: bool
+) -> None:
+    # Without a coordinator only the marker can open the PR, not accepted QA evidence.
+    (project.main / ".harness" / "orchestration" / "coordinator.py").unlink()
+    shutil.copytree(
+        HOOK.parent,
+        project.main / ".claude" / "hooks",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+    if project_dir:
+        env["CLAUDE_PROJECT_DIR"] = str(project.main)
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"gh pr create --head {BRANCH}"},
+        "cwd": str(project.main),
+    }
+
+    def create_pr() -> subprocess.CompletedProcess[str]:
+        """Run the runtime's require hook on a PR-creating call from the session root."""
+        return subprocess.run(
+            ["bash", "-c", runtime_require_command(template)],
+            cwd=project.main,
+            env=env,
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    without_marker = create_pr()
+    recorded = subprocess.run(
+        ["bash", "-c", skill_record_command(skill)],
+        cwd=project.linked,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    after_marker = create_pr()
+
+    assert without_marker.returncode == 2
+    assert recorded.returncode == 0, recorded.stderr
+    assert (project.linked / ".claude" / ".qa-gate" / "passed").is_file()
+    assert after_marker.returncode == 0, after_marker.stderr
+
+
+@pytest.mark.parametrize("skill", ["qa-gate", "to-pull-requests"])
+def test_the_russian_description_gives_the_same_record_command(skill: str) -> None:
+    description = (DESCRIPTIONS / f"{skill}.md").read_text(encoding="utf-8")
+
+    assert skill_record_command(skill) in description
