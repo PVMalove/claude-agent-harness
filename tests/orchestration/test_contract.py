@@ -87,6 +87,39 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
         self.assertIn("name: junit-docker-smoke", smoke)
         self.assertIn("docker-smoke", blocks["dashboard"].split("runs-on:", 1)[0])
 
+    def test_the_podman_smoke_runs_only_on_the_self_hosted_runner_outside_pull_requests(
+        self,
+    ) -> None:
+        workflows = ROOT / ".github/workflows"
+        smoke = (workflows / "podman-smoke.yml").read_text(encoding="utf-8")
+
+        # The repository is public: no pull request event may reach the owner's machine.
+        self.assertIn("workflow_dispatch:", smoke)
+        self.assertIn("push:", smoke)
+        self.assertNotIn("pull_request", smoke)
+        self.assertIn("runs-on: [self-hosted, linux, x64, fedora-selinux-podman]", smoke)
+        self.assertIn("permissions:\n  contents: read", smoke)
+        self.assertIn("cancel-in-progress: false", smoke)
+        # pyproject.toml deselects the marker everywhere else; this workflow alone selects it.
+        selections = {
+            path.name: path.read_text(encoding="utf-8").count("-m podman_smoke")
+            for path in workflows.glob("*.yml")
+        }
+        self.assertEqual(
+            {name: count for name, count in selections.items() if count},
+            {"podman-smoke.yml": 1},
+        )
+        self.assertIn("tests/orchestration/test_podman_smoke.py", smoke)
+        self.assertIn('HARNESS_REQUIRE_PODMAN_SMOKE: "1"', smoke)
+        self.assertIn('HARNESS_REQUIRE_RUNTIME: "1"', smoke)
+        self.assertIn("cargo build --locked", smoke)
+        for dockerfile in ("Dockerfile.sandbox", "Dockerfile.proxy"):
+            self.assertIn(f"podman build -f harness/container/{dockerfile}", smoke)
+        for tag in ("harness-worker:smoke", "harness-proxy:smoke"):
+            self.assertIn(f"-t {tag}", smoke)
+        self.assertIn("name: junit-podman-smoke", smoke)
+        self.assertNotIn("docker build", smoke)
+
 
 class ContractErrorInvariantTests(unittest.TestCase):
     def test_contract_error_is_a_harness_error(self) -> None:

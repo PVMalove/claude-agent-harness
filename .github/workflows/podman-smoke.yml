@@ -1,0 +1,82 @@
+name: podman-smoke
+
+# Live smoke of the container executor on rootless Podman, Fedora, SELinux enforcing (#811;
+# ADR 0022). Only the self-hosted runner that the repository owner registered with the label
+# fedora-selinux-podman runs it. The repository is public, so no pull request event ever reaches
+# that machine: the workflow runs on a push that touches the container executor, and on demand.
+# It stays out of verify.yml: an offline runner must not hold pull request checks or a release.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/podman-smoke.yml
+      - harness/container/**
+      - harness/orchestration/container_executor.py
+      - native/harness-runtime/**
+      - pyproject.toml
+      - tests/orchestration/runtime_store_support.py
+      - tests/orchestration/test_docker_smoke.py
+      - tests/orchestration/test_podman_smoke.py
+      - tests/orchestration/test_qa_container.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: podman-smoke
+  cancel-in-progress: false
+
+jobs:
+  podman-smoke:
+    runs-on: [self-hosted, linux, x64, fedora-selinux-podman]
+    timeout-minutes: 45
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-local-path: ${{ runner.temp }}/setup-uv-cache
+      - name: Keep the uv cache where setup-uv restores it
+        shell: bash
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
+      - name: Bootstrap harness environment
+        run: make bootstrap
+      - name: Record the host facts of the smoke
+        run: |
+          mkdir -p .harness/.sandboxes/logs
+          getenforce | tee .harness/.sandboxes/logs/selinux-mode.txt
+          podman info --format json > .harness/.sandboxes/logs/podman-info.json
+      - name: Build harness-runtime for the smoke
+        working-directory: native/harness-runtime
+        run: cargo build --locked
+      # The harness never builds an image; these are the commands the shipped guide gives the user.
+      - name: Build the smoke images
+        run: |
+          podman build -f harness/container/Dockerfile.sandbox -t harness-sandbox:smoke harness/container
+          worker="$RUNNER_TEMP/smoke-worker"
+          mkdir -p "$worker"
+          printf 'FROM harness-sandbox:smoke\nLABEL org.opencontainers.image.title=harness-smoke-worker\n' \
+            > "$worker/Containerfile"
+          podman build -t harness-worker:smoke "$worker"
+          podman build -f harness/container/Dockerfile.proxy -t harness-proxy:smoke harness/container
+      - name: Podman smoke of the cgroup limits, the worker and the QA paths
+        env:
+          HARNESS_RUNTIME_BIN: ${{ github.workspace }}/native/harness-runtime/target/debug/harness-runtime
+          HARNESS_REQUIRE_RUNTIME: "1"
+          HARNESS_REQUIRE_PODMAN_SMOKE: "1"
+        run: |
+          .harness/.venv/bin/python -m pytest -m podman_smoke -v \
+            --junitxml=.harness/.sandboxes/logs/junit-podman-smoke.xml -o junit_family=xunit2 \
+            tests/orchestration/test_podman_smoke.py
+      - name: Keep the test report and the host facts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-podman-smoke
+          path: |
+            .harness/.sandboxes/logs/junit-podman-smoke.xml
+            .harness/.sandboxes/logs/podman-info.json
+            .harness/.sandboxes/logs/selinux-mode.txt
+          if-no-files-found: ignore
+          retention-days: 3
