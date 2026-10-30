@@ -12,24 +12,33 @@
 //! process, and the creation time and the exit code stay readable after the process has ended.
 //! [`send_ctrl_break`] attaches the calling process to the console of a member of the job, so
 //! only a short helper process without a console of its own may call it.
+//!
+//! The members of a job are told apart by the full path of their executable image
+//! ([`Process::image_path`]), by the pid of the process that created them ([`parent_pids`]) and by
+//! the system directory of Windows ([`system_directory`]), where the console host lives.
 
-use std::ffi::OsStr;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::mem::{offset_of, size_of};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
+use std::path::PathBuf;
 use std::process::Child;
 use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::{
-    DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
-    ERROR_MORE_DATA, FILETIME, HANDLE, SetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
+    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_NO_MORE_FILES, FILETIME, HANDLE, SetLastError,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::SE_KERNEL_OBJECT;
 use windows_sys::Win32::System::Console::{
     AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
@@ -38,11 +47,14 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, OpenJobObjectW,
     QueryInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE};
+use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+use windows_sys::Win32::System::SystemServices::{
+    JOB_OBJECT_ASSIGN_PROCESS, JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE,
+};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, OpenProcess, OpenThread,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ResumeThread, THREAD_SUSPEND_RESUME,
-    WaitForSingleObject,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    QueryFullProcessImageNameW, ResumeThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 use windows_sys::core::BOOL;
 
@@ -68,6 +80,9 @@ pub enum JobAccess {
     Query,
     /// List, count and terminate the members: a runtime that finds the job of an execution again.
     Control,
+    /// List, count and add a process: a test that puts a process of its own into a job. The
+    /// runtime never opens a job with it.
+    Assign,
 }
 
 /// An open handle to a job object.
@@ -119,6 +134,7 @@ impl Job {
         let rights = match access {
             JobAccess::Query => JOB_OBJECT_QUERY,
             JobAccess::Control => JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE,
+            JobAccess::Assign => JOB_OBJECT_QUERY | JOB_OBJECT_ASSIGN_PROCESS,
         };
         let wide_name = wide(OsStr::new(name))?;
         // SAFETY: `wide_name` is NUL-terminated and outlives the call; the handle is not inherited.
@@ -378,6 +394,39 @@ impl Process {
         Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
     }
 
+    /// The full path of the executable image of the process in the Win32 form, such as
+    /// `C:\Windows\System32\conhost.exe`.
+    ///
+    /// # Errors
+    /// The error of the OS, such as a process that has ended meanwhile.
+    pub fn image_path(&self) -> io::Result<PathBuf> {
+        // A Win32 path holds at most 32 767 UTF-16 units.
+        let mut capacity = 1024_u32;
+        loop {
+            let mut buffer = vec![0_u16; capacity as usize];
+            let mut size = capacity;
+            // SAFETY: the handle has query access; the buffer holds `size` units and `size` is a
+            // valid in-out pointer.
+            let read = unsafe {
+                QueryFullProcessImageNameW(
+                    self.raw(),
+                    PROCESS_NAME_WIN32,
+                    buffer.as_mut_ptr(),
+                    &mut size,
+                )
+            };
+            if read != 0 {
+                buffer.truncate(size as usize);
+                return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+            }
+            let err = io::Error::last_os_error();
+            if !is_os_error(&err, &[ERROR_INSUFFICIENT_BUFFER]) || capacity >= 65_536 {
+                return Err(err);
+            }
+            capacity *= 2;
+        }
+    }
+
     /// The exit code of the process once it has ended, `None` while it runs. The wait on the
     /// handle decides, so a process that ended with code 259 (`STILL_ACTIVE`) is not taken for a
     /// running one.
@@ -430,6 +479,58 @@ impl Process {
             found = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } != 0;
         }
         Ok(resumed)
+    }
+}
+
+/// The pid of the process that created each process of the system, by its pid, from one
+/// snapshot. Windows keeps the pid of the creator after the creator has ended, so the pid may
+/// name another process by now.
+///
+/// # Errors
+/// The error of the OS when the processes cannot be listed.
+pub fn parent_pids() -> io::Result<HashMap<u32, u32>> {
+    // SAFETY: plain value arguments; the snapshot handle is checked and owned below.
+    let snapshot = owned_handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })?;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..PROCESSENTRY32W::default()
+    };
+    let mut parents = HashMap::new();
+    // SAFETY: the snapshot handle is open and `entry` carries its size.
+    let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    while found {
+        parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        // SAFETY: as for `Process32FirstW`.
+        found = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    }
+    let err = io::Error::last_os_error();
+    if !is_os_error(&err, &[ERROR_NO_MORE_FILES]) {
+        return Err(err);
+    }
+    Ok(parents)
+}
+
+/// The system directory of Windows, such as `C:\Windows\System32`.
+///
+/// # Errors
+/// The error of the OS.
+pub fn system_directory() -> io::Result<PathBuf> {
+    let mut buffer = vec![0_u16; 260];
+    loop {
+        let capacity = u32::try_from(buffer.len())
+            .map_err(|_| io::Error::other("the system directory is too long"))?;
+        // SAFETY: the buffer holds `capacity` units.
+        let len = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), capacity) } as usize;
+        if len == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // A result that fits is its length without the terminator; one that does not is the
+        // size it needs with the terminator.
+        if len < buffer.len() {
+            buffer.truncate(len);
+            return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+        }
+        buffer = vec![0_u16; len];
     }
 }
 

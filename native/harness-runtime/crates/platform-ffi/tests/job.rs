@@ -1,20 +1,29 @@
 //! Job objects and process handles against the real operating system: a job without limits and
 //! with an owner-only DACL, a name that is never taken over, a name that lives with the member's
 //! copy of the handle and ends with the last handle, a suspended child that runs only after
-//! resume, descendants that stay in the job until `TerminateJobObject`, and a held handle that
-//! keeps the creation time and the exit code, 259 included. The children are Python scripts of the
-//! `python` on PATH. Runs in the Windows CI job only.
+//! resume, descendants that stay in the job with the console host of the hidden console of their
+//! leader until `TerminateJobObject` (printed as `JOB-MEMBERS`), a held handle that
+//! keeps the creation time and the exit code, 259 included, the executable image and the creator
+//! of a process, the system directory with the console host, and a job opened to assign that
+//! takes a process. The children are Python scripts of the `python` on PATH. Runs in the Windows
+//! CI job only.
 #![cfg(windows)]
 
+#[path = "../../supervisor/tests/windows_job/mod.rs"]
+mod windows_job;
+
+use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use platform_ffi::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, Job, JobAccess, Process,
-    current_user_sid, process_creation_time,
+    current_user_sid, parent_pids, process_creation_time, system_directory,
 };
+use windows_job::Expected;
 
 const SLEEPER: &str = "import time\nwhile True: time.sleep(0.1)";
 
@@ -50,6 +59,35 @@ impl Drop for Reaper {
             let _ = child.wait();
         }
     }
+}
+
+/// Terminate a job at the end of a test, whatever happened: the descendants of its members end
+/// with it.
+struct Terminate(Job);
+
+impl Drop for Terminate {
+    fn drop(&mut self) {
+        let _ = self.0.terminate(1);
+    }
+}
+
+/// The first line `child` prints on its piped stdout, waited for up to `seconds`.
+fn first_line(child: &mut Child, seconds: u64) -> String {
+    let stdout = child.stdout.take().unwrap();
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = send.send(line);
+    });
+    receive
+        .recv_timeout(Duration::from_secs(seconds))
+        .unwrap_or_else(|err| {
+            panic!(
+                "the child printed no line within {seconds} s ({err}); try_wait: {:?}",
+                child.try_wait()
+            )
+        })
 }
 
 fn eventually(seconds: u64, mut done: impl FnMut() -> bool) -> bool {
@@ -157,15 +195,24 @@ fn descendants_stay_in_the_job_until_terminate_job_object_and_an_outsider_is_unt
     job.assign(&leader).unwrap();
     leader.resume().unwrap();
 
-    assert!(
-        eventually(20, || job.processes().unwrap().len() == 2),
-        "{:?}",
-        job.processes()
+    // The leader, its descendant and the console host of the hidden console of the leader.
+    let members = windows_job::wait_for(
+        &job,
+        "descendants",
+        &[
+            Expected::python("leader", leader.pid()),
+            Expected::python_child_of("descendant", leader.pid()),
+            Expected::console_host_of(leader.pid()),
+        ],
+        20,
     );
-    assert_eq!(job.active_processes().unwrap(), 2);
-    for pid in job.processes().unwrap() {
-        let member = Process::open(pid).unwrap().unwrap();
-        assert!(job.contains(&member).unwrap(), "{pid}");
+    assert_eq!(
+        usize::try_from(job.active_processes().unwrap()).unwrap(),
+        members.len()
+    );
+    for member in &members {
+        let process = Process::open(member.pid).unwrap().unwrap();
+        assert!(job.contains(&process).unwrap(), "{member:?}");
     }
     assert!(!job.contains(&outsider).unwrap());
 
@@ -197,4 +244,71 @@ fn a_held_handle_keeps_the_creation_time_and_the_exit_code_even_259() {
     let again = Process::open(process.pid()).unwrap().unwrap();
     assert_eq!(again.creation_time().unwrap(), created);
     assert_eq!(again.exit_code().unwrap(), Some(259));
+}
+
+#[test]
+fn a_process_shows_its_executable_image_and_the_pid_of_its_creator() {
+    let job = Terminate(Job::create(&job_name("image"), &current_user_sid().unwrap()).unwrap());
+    let script = format!(
+        "import subprocess, sys, time\nchild = subprocess.Popen([sys.executable, '-c', {SLEEPER:?}])\nprint(child.pid, sys.executable, flush=True)\n{SLEEPER}"
+    );
+    let mut command = python(&script);
+    command
+        .stdout(Stdio::piped())
+        .creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    let mut reaper = Reaper(vec![command.spawn().unwrap()]);
+    let leader = Process::from_child(&reaper.0[0]).unwrap();
+    job.0.assign(&leader).unwrap();
+    leader.resume().unwrap();
+
+    let line = first_line(&mut reaper.0[0], 20);
+    let (pid, executable) = line.trim().split_once(' ').unwrap();
+    let child = Process::open(pid.parse().unwrap()).unwrap().unwrap();
+    let parents = parent_pids().unwrap();
+
+    assert_eq!(parents.get(&child.pid()), Some(&leader.pid()), "{line}");
+    assert_eq!(parents.get(&leader.pid()), Some(&std::process::id()));
+    let image = child.image_path().unwrap();
+    assert!(
+        image.to_string_lossy().eq_ignore_ascii_case(executable),
+        "{image:?} is not {executable}"
+    );
+    let leader_image = leader.image_path().unwrap();
+    assert!(
+        leader_image
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("python.exe")),
+        "{leader_image:?}"
+    );
+}
+
+#[test]
+fn the_system_directory_is_system32_of_the_windows_directory_and_holds_the_console_host() {
+    let root = std::env::var("SystemRoot").unwrap();
+
+    let directory = system_directory().unwrap();
+
+    assert!(
+        directory
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&format!(r"{root}\System32")),
+        "{directory:?} under {root}"
+    );
+    assert!(directory.join("conhost.exe").is_file(), "{directory:?}");
+}
+
+#[test]
+fn a_job_opened_to_assign_takes_a_process_and_one_opened_to_query_does_not() {
+    let name = job_name("assign");
+    let job = Job::create(&name, &current_user_sid().unwrap()).unwrap();
+    let reaper = Reaper(vec![suspended(SLEEPER)]);
+    let process = Process::from_child(&reaper.0[0]).unwrap();
+    let query = Job::open(&name, JobAccess::Query).unwrap().unwrap();
+    let assign = Job::open(&name, JobAccess::Assign).unwrap().unwrap();
+
+    assert!(query.assign(&process).is_err());
+    assign.assign(&process).unwrap();
+
+    assert!(job.contains(&process).unwrap());
+    assert_eq!(assign.processes().unwrap(), vec![process.pid()]);
 }

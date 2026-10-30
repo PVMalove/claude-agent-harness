@@ -6,7 +6,7 @@ mod job;
 
 pub use job::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS, Job, JobAccess,
-    Process, ignore_ctrl_events, send_ctrl_break,
+    Process, ignore_ctrl_events, parent_pids, send_ctrl_break, system_directory,
 };
 
 use std::ffi::{OsStr, c_void};

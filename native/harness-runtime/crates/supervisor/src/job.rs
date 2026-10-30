@@ -1,16 +1,24 @@
 //! The pure logic of the Windows supervisor (ADR 0022, sections 2, 3 and 5): the name of the job
-//! object of an execution, and what an observation of its leader and its job means. It makes no
-//! system call, so it builds and is tested on every platform.
+//! object of an execution, which members of the job belong to the execution, which member an
+//! intent adopts as its leader after a restart (`leader_of`), and what an observation of its
+//! leader and its job means. It makes no system call, so it builds and is tested on every
+//! platform.
 //!
-//! The table of an observation:
+//! The hidden console of an execution has a console host, `conhost.exe` of the system directory,
+//! that Windows starts for it inside the job. It serves the console and ends after its last
+//! client; it is a member of the job, but never a member of the execution (`execution_members`).
+//!
+//! The table of an observation; a member is a live member of the execution, the console host is
+//! none:
 //! - the leader runs with its recorded pid and creation time and is in the job: `running`;
 //! - the leader runs outside its job, or the job has no member or no name: `unknown`, because the
 //!   two observations contradict each other;
 //! - the leader is gone (no process, another process at its pid, or ended) and a member of the job
 //!   runs: `running`, until the members end or the deadline stops them;
-//! - the leader ended while this runtime held a handle to it, and the job is empty: `exited` with
-//!   the exit code of that handle;
-//! - the leader is gone without a held handle and the job is empty, or the job has no name: `lost`;
+//! - the leader ended while this runtime held a handle to it, and the job has no member: `exited`
+//!   with the exit code of that handle;
+//! - the leader is gone without a held handle and the job has no member, or the job has no name:
+//!   `lost`;
 //! - an observation that failed: `unknown`, and the lease stays held.
 
 use contracts::ExecutionState;
@@ -22,6 +30,73 @@ pub const PREFIX: &str = r"Global\harness-runtime-execution-";
 /// The name of the job object of the execution `operation_id`: the same for every runtime.
 pub fn name(operation_id: &str) -> String {
     format!("{PREFIX}{operation_id}")
+}
+
+/// The file name of the console host of Windows.
+const CONSOLE_HOST: &str = "conhost.exe";
+
+/// A live member of the job object of an execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub pid: u32,
+    /// The pid of the process that created it, when it was looked up.
+    pub parent: Option<u32>,
+    /// Its creation time (a `FILETIME`: 100 ns intervals since 1601).
+    pub created: u64,
+    /// Whether it is the console host of the hidden console of the execution.
+    pub console_host: bool,
+}
+
+/// Whether the executable image `image` (a full Win32 path) is the console host: `conhost.exe` in
+/// the system directory `system_dir`, without regard to case. Another directory or another name,
+/// such as `OpenConsole.exe`, is not.
+pub fn is_console_host(image: &str, system_dir: &str) -> bool {
+    let host = format!("{}\\{CONSOLE_HOST}", system_dir.trim_end_matches('\\'));
+    image.to_lowercase() == host.to_lowercase()
+}
+
+/// The number of the live members of the execution among `members`: the console host is none.
+pub fn execution_members(members: &[Member]) -> u32 {
+    let count = members.iter().filter(|member| !member.console_host).count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// The leader among the live `members` of the job of an intent: the member that is not the
+/// console host, whose creator is the runtime `launcher_pid` that recorded the intent, and that
+/// was created no earlier than that runtime (`launcher_created`). Only that runtime launched a
+/// process into the job; every other member of the execution descends from the leader. Neither
+/// the place of a member in the list nor its creation time alone makes it the leader: the
+/// creation time is coarse, and a process may join the job after its creation.
+///
+/// `Ok(None)` when the job holds no live member of the execution: the intent is `lost`.
+///
+/// # Errors
+/// Live members of the execution, but none or more than one that the runtime of the intent
+/// created: nothing proves which process it launched.
+pub fn leader_of(
+    members: &[Member],
+    launcher_pid: u32,
+    launcher_created: u64,
+) -> Result<Option<u32>, String> {
+    let launched: Vec<u32> = members
+        .iter()
+        .filter(|member| {
+            !member.console_host
+                && member.parent == Some(launcher_pid)
+                && member.created >= launcher_created
+        })
+        .map(|member| member.pid)
+        .collect();
+    match launched.as_slice() {
+        [leader] => Ok(Some(*leader)),
+        [] if execution_members(members) == 0 => Ok(None),
+        [] => Err(format!(
+            "no live member of the job was created by the runtime {launcher_pid} of the intent"
+        )),
+        _ => Err(format!(
+            "the live members {launched:?} of the job were all created by the runtime {launcher_pid} of the intent"
+        )),
+    }
 }
 
 /// What the runtime sees of the recorded leader of an execution.
@@ -59,7 +134,7 @@ impl LeaderSeen {
 pub enum JobSeen {
     /// No object has the name: no handle to the job is open anywhere.
     NameAbsent,
-    /// The job exists and holds this many processes that have not ended.
+    /// The job exists and holds this many live members of the execution (`execution_members`).
     Members(u32),
     /// The OS gave no answer.
     Unknown(String),
@@ -211,6 +286,170 @@ mod tests {
                 "{leader:?}"
             );
         }
+    }
+
+    const SYSTEM: &str = r"C:\WINDOWS\system32";
+    /// The pid and the creation time of the runtime that recorded an intent.
+    const RUNTIME: u32 = 100;
+    const STARTED: u64 = 1_000;
+
+    fn member(pid: u32, console_host: bool) -> Member {
+        Member {
+            pid,
+            parent: None,
+            created: 0,
+            console_host,
+        }
+    }
+
+    fn created_by(pid: u32, parent: u32, created: u64) -> Member {
+        Member {
+            pid,
+            parent: Some(parent),
+            created,
+            console_host: false,
+        }
+    }
+
+    fn host_of(pid: u32, parent: u32, created: u64) -> Member {
+        Member {
+            console_host: true,
+            ..created_by(pid, parent, created)
+        }
+    }
+
+    #[test]
+    fn the_leader_is_the_member_the_runtime_of_the_intent_created_wherever_it_is_listed() {
+        let members = [
+            // A process created before the runtime, by another one, and put into the job.
+            created_by(7, 55, STARTED - 10),
+            // A console host the runtime created before the leader.
+            host_of(8, RUNTIME, STARTED + 1),
+            created_by(9, 9_000, STARTED + 1),
+            created_by(12, 20, STARTED + 3),
+            // The leader, created in the same tick as the console host.
+            created_by(20, RUNTIME, STARTED + 1),
+            host_of(21, 20, STARTED + 2),
+        ];
+
+        assert_eq!(leader_of(&members, RUNTIME, STARTED), Ok(Some(20)));
+        assert_eq!(
+            leader_of(
+                &[created_by(20, RUNTIME, STARTED), host_of(21, 20, STARTED)],
+                RUNTIME,
+                STARTED
+            ),
+            Ok(Some(20))
+        );
+    }
+
+    #[test]
+    fn a_console_host_is_never_the_leader_even_alone() {
+        for members in [
+            vec![host_of(8, RUNTIME, STARTED + 1)],
+            vec![host_of(8, RUNTIME, STARTED + 1), host_of(9, 4, STARTED + 2)],
+            vec![],
+        ] {
+            assert_eq!(
+                leader_of(&members, RUNTIME, STARTED),
+                Ok(None),
+                "{members:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_created_before_the_runtime_or_by_another_process_is_never_the_leader() {
+        for members in [
+            vec![created_by(7, RUNTIME, STARTED - 1)],
+            vec![created_by(7, 55, STARTED + 5), host_of(8, 7, STARTED + 6)],
+            vec![member(7, false)],
+        ] {
+            let found = leader_of(&members, RUNTIME, STARTED);
+            assert!(found.is_err(), "{members:?}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn two_members_the_runtime_created_prove_no_leader() {
+        let members = [
+            created_by(20, RUNTIME, STARTED + 1),
+            created_by(30, RUNTIME, STARTED + 2),
+            host_of(21, 20, STARTED + 2),
+        ];
+
+        let found = leader_of(&members, RUNTIME, STARTED);
+
+        assert!(found.is_err(), "{found:?}");
+    }
+
+    #[test]
+    fn the_console_host_is_conhost_of_the_system_directory_in_any_case() {
+        assert!(is_console_host(r"C:\Windows\System32\conhost.exe", SYSTEM));
+        assert!(is_console_host(r"c:\windows\system32\CONHOST.EXE", SYSTEM));
+        assert!(is_console_host(
+            r"C:\Windows\System32\conhost.exe",
+            r"C:\Windows\System32\"
+        ));
+        for image in [
+            r"C:\Windows\SysWOW64\conhost.exe",
+            r"D:\Windows\System32\conhost.exe",
+            r"C:\Windows\System32\sub\conhost.exe",
+            r"C:\tools\conhost.exe",
+            r"C:\Windows\System32\OpenConsole.exe",
+            r"C:\Windows\System32\conhost.exe.bak",
+            r"C:\Windows\System32\xconhost.exe",
+            r"C:\Python312\python.exe",
+            "conhost.exe",
+        ] {
+            assert!(!is_console_host(image, SYSTEM), "{image}");
+        }
+    }
+
+    #[test]
+    fn the_console_host_is_never_a_member_of_the_execution() {
+        assert_eq!(execution_members(&[]), 0);
+        assert_eq!(execution_members(&[member(7, true)]), 0);
+        assert_eq!(
+            execution_members(&[member(7, true), member(8, false), member(9, false)]),
+            2
+        );
+    }
+
+    #[test]
+    fn a_held_leader_that_ended_beside_a_live_console_host_is_exited() {
+        let only_the_host = JobSeen::Members(execution_members(&[member(7, true)]));
+
+        assert_eq!(
+            outcome(
+                &LeaderSeen::Exited {
+                    code: 5,
+                    held: true
+                },
+                &only_the_host
+            ),
+            Outcome::Exited(5)
+        );
+        for leader in [
+            LeaderSeen::Absent,
+            LeaderSeen::PidReused,
+            LeaderSeen::Exited {
+                code: 5,
+                held: false,
+            },
+        ] {
+            assert_eq!(
+                outcome(&leader, &only_the_host),
+                Outcome::Lost,
+                "{leader:?}"
+            );
+        }
+        let with_a_descendant =
+            JobSeen::Members(execution_members(&[member(7, true), member(8, false)]));
+        assert_eq!(
+            outcome(&LeaderSeen::Absent, &with_a_descendant),
+            Outcome::Running
+        );
     }
 
     #[test]

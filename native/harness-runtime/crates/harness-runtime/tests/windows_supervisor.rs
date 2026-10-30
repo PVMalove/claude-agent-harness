@@ -2,35 +2,46 @@
 //! executable (ADR 0022, sections 2, 3 and 5): a deadline stop sends `CTRL_BREAK` and an
 //! execution that obeys ends without `TerminateJobObject`, one that ignores it ends by
 //! `TerminateJobObject` after the grace, and an execution outlives a runtime that dies. A new
-//! runtime finds its job by name, records its exit code from the handle it holds, finishes a stop
-//! the dead runtime began, adopts the earliest member of the job of an intent without a second
-//! launch, records an intent without a process `lost`, and never signals a process that holds the
-//! pid of a forged identity.
+//! runtime finds its job by name, records its exit code from the handle it holds even while the
+//! console host of its hidden console lives on in the job, finishes a stop
+//! the dead runtime began, adopts the leader the runtime of an intent launched without a second
+//! launch and never a member created before it, records an intent without a process `lost`, and
+//! never signals a process that holds the pid of a forged identity.
 //!
 //! The runtime that dies is this test binary in a process of its own, running only the ignored
 //! test `runtime_process`, killed with `TerminateProcess`; the new runtime is a supervisor in the
 //! test process. The executions are Python scripts of the `python` on PATH. Runs in the Windows CI
 //! job only.
+//!
+//! Every wait has a deadline that fails the test with what it waited for and what it saw: the
+//! output of the runtime is read by two threads, because the leader inherits the pipes of the
+//! runtime and keeps them open after the runtime died, so their end never comes while it runs.
 #![cfg(windows)]
 
 #[path = "../../supervisor/tests/common/mod.rs"]
 mod common;
+#[path = "../../supervisor/tests/windows_job/mod.rs"]
+mod windows_job;
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use contracts::{ExecutionState, PROTOCOL_VERSION, Request};
-use platform_ffi::{CREATE_NEW_PROCESS_GROUP, Job, JobAccess, Process};
+use platform_ffi::{
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS, Job, JobAccess, Process,
+};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use state::canonical::{canonical_json, object_sha256, sha256_hex};
 use state::executions::{self, Execution};
 use supervisor::{Supervisor, job};
+use windows_job::Expected;
 
 const HELPER: &str = env!("CARGO_BIN_EXE_harness-runtime");
 const RUNTIME_STATE: &str = "HR_TEST_WINDOWS_RUNTIME_STATE";
@@ -41,6 +52,33 @@ const FIXTURE: &str = concat!(
 );
 const OBEYS: &str = "import signal, sys, time\nsignal.signal(signal.SIGBREAK, lambda *_: sys.exit(7))\nwhile True: time.sleep(0.05)";
 const IGNORES: &str = "import signal, time\nsignal.signal(signal.SIGBREAK, signal.SIG_IGN)\nwhile True: time.sleep(0.05)";
+/// How long a test waits for a line of a runtime.
+const LINE_WAIT: Duration = Duration::from_secs(60);
+/// How long a test waits for a process it killed to end.
+const END_WAIT: Duration = Duration::from_secs(20);
+
+/// Wait up to `within` for `child` to end: its status, or `None` while it still runs.
+fn reap(child: &mut Child, within: Duration) -> io::Result<Option<ExitStatus>> {
+    let until = Instant::now() + within;
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(Some(status)),
+            None if Instant::now() >= until => return Ok(None),
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// A process a test started outside the runtime: killed and waited for at the end of the test,
+/// whatever happened.
+struct Reaper(Child);
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = reap(&mut self.0, END_WAIT);
+    }
+}
 
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
@@ -172,7 +210,8 @@ impl Repo {
             .unwrap()
     }
 
-    /// Wait until the execution is in `state`, and return it; `runtime` reconciles meanwhile.
+    /// Wait up to `seconds` until the execution is in `state`, and return it; `runtime` reconciles
+    /// meanwhile.
     fn wait_for(
         &self,
         state: ExecutionState,
@@ -185,12 +224,58 @@ impl Repo {
                 runtime.reconcile_all();
             }
             let execution = self.execution();
-            if execution.state == state || Instant::now() > until {
-                assert_eq!(execution.state, state, "{execution:?}");
+            if execution.state == state {
                 return execution;
             }
+            assert!(
+                Instant::now() <= until,
+                "the execution is not {state:?} within {seconds} s; {}",
+                self.seen(&execution)
+            );
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// The pid a leader printed as the first line of its stdout, waited for up to `seconds`.
+    fn printed_pid(&self, seconds: u64) -> u32 {
+        let until = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let execution = self.execution();
+            let printed = execution.launch["logs"]["stdout"]
+                .as_str()
+                .and_then(|path| fs::read_to_string(path).ok())
+                .and_then(|text| text.lines().next()?.trim().parse().ok());
+            if let Some(pid) = printed {
+                return pid;
+            }
+            assert!(
+                Instant::now() <= until,
+                "the leader printed no pid within {seconds} s; {}",
+                self.seen(&execution)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// What a test that waited in vain saw: the execution, the members of its job and the logs of
+    /// its leader.
+    fn seen(&self, execution: &Execution) -> String {
+        let members = match Job::open(&self.job_name(), JobAccess::Query) {
+            Ok(Some(job)) => format!("{:?}", job.processes()),
+            Ok(None) => "no job object".to_owned(),
+            Err(err) => format!("the job object cannot be opened: {err}"),
+        };
+        let log = |stream: &str| {
+            execution.launch["logs"][stream]
+                .as_str()
+                .map(|path| fs::read_to_string(path).unwrap_or_else(|err| format!("<{err}>")))
+                .unwrap_or_default()
+        };
+        format!(
+            "execution: {execution:?}; job members: {members}; leader stdout: {:?}; leader stderr: {:?}",
+            log("stdout"),
+            log("stderr")
+        )
     }
 }
 
@@ -204,11 +289,45 @@ impl Drop for Repo {
     }
 }
 
+/// The first line `child` prints on its piped stdout, waited for up to `within`.
+fn first_line(child: &mut Child, within: Duration) -> String {
+    let (send, lines) = mpsc::channel();
+    forward(child.stdout.take().unwrap(), false, send);
+    lines.recv_timeout(within).map_or_else(
+        |err| {
+            panic!(
+                "the process printed no line within {} s ({err}); try_wait: {:?}",
+                within.as_secs(),
+                child.try_wait()
+            )
+        },
+        |(_, line)| line,
+    )
+}
+
+/// Send every line of `pipe` to `lines`, marked `stderr` or not, until its end.
+fn forward(pipe: impl Read + Send + 'static, stderr: bool, lines: Sender<(bool, String)>) {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut line = Vec::new();
+        while matches!(reader.read_until(b'\n', &mut line), Ok(read) if read > 0) {
+            let text = String::from_utf8_lossy(&line).trim_end().to_owned();
+            if lines.send((stderr, text)).is_err() {
+                return;
+            }
+            line.clear();
+        }
+    });
+}
+
 /// A runtime in a process of its own: this test binary running only `runtime_process` on the
-/// store of a repository.
+/// store of a repository. It is killed and waited for at the end of the test, whatever happened.
 struct Runtime {
     child: Child,
     _stdin: ChildStdin,
+    lines: Receiver<(bool, String)>,
+    /// Every line read from it so far, for the message of a wait in vain.
+    journal: Vec<String>,
 }
 
 impl Runtime {
@@ -232,26 +351,48 @@ impl Runtime {
         }
         let mut child = command.spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
+        let (send, lines) = mpsc::channel();
+        forward(child.stdout.take().unwrap(), false, send.clone());
+        forward(child.stderr.take().unwrap(), true, send);
         Self {
             child,
             _stdin: stdin,
+            lines,
+            journal: Vec::new(),
         }
     }
 
-    /// The rest of the first line of its stdout, or of its stderr, that starts with `prefix`.
-    fn line(&mut self, stderr: bool, prefix: &str) -> String {
-        let pipe: Box<dyn Read> = if stderr {
-            Box::new(self.child.stderr.take().unwrap())
-        } else {
-            Box::new(self.child.stdout.take().unwrap())
-        };
-        for line in BufReader::new(pipe).lines() {
-            let line = line.unwrap();
-            if let Some(rest) = line.strip_prefix(prefix) {
-                return rest.to_owned();
+    /// The rest of the first line of its stdout, or of its stderr, after `marker`. The marker may
+    /// follow other text: libtest prints `test runtime_process ... ` without a line end before the
+    /// test prints. A runtime that prints no such line within `LINE_WAIT` fails the test with
+    /// everything it printed and whether it ended.
+    fn line(&mut self, stderr: bool, marker: &str) -> String {
+        let until = Instant::now() + LINE_WAIT;
+        loop {
+            match self
+                .lines
+                .recv_timeout(until.saturating_duration_since(Instant::now()))
+            {
+                Ok((from_stderr, line)) => {
+                    let rest = line
+                        .split_once(marker)
+                        .filter(|_| from_stderr == stderr)
+                        .map(|(_, rest)| rest.to_owned());
+                    let stream = if from_stderr { "stderr" } else { "stdout" };
+                    self.journal.push(format!("{stream}: {line}"));
+                    if let Some(rest) = rest {
+                        return rest;
+                    }
+                }
+                Err(err) => panic!(
+                    "no {} line with {marker:?} from the runtime within {} s ({err}); try_wait: {:?}; its output:\n{}",
+                    if stderr { "stderr" } else { "stdout" },
+                    LINE_WAIT.as_secs(),
+                    self.child.try_wait(),
+                    self.journal.join("\n")
+                ),
             }
         }
-        panic!("the runtime process ended before a line {prefix:?}");
     }
 
     /// The receipt the runtime printed after its launch.
@@ -259,10 +400,24 @@ impl Runtime {
         serde_json::from_str(&self.line(false, "RECEIPT ")).unwrap()
     }
 
-    /// Kill it with `TerminateProcess`: nothing of it runs any more.
+    /// Kill it with `TerminateProcess` and wait up to `END_WAIT` for its end: nothing of it runs
+    /// any more.
     fn kill(mut self) {
         self.child.kill().unwrap();
-        self.child.wait().unwrap();
+        let ended = reap(&mut self.child, END_WAIT);
+        assert!(
+            matches!(ended, Ok(Some(_))),
+            "the killed runtime {} did not end within {} s: {ended:?}",
+            self.child.id(),
+            END_WAIT.as_secs()
+        );
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = reap(&mut self.child, END_WAIT);
     }
 }
 
@@ -367,6 +522,76 @@ fn an_execution_outlives_its_runtime_and_a_new_runtime_records_its_exit_code() {
 }
 
 #[test]
+fn a_new_runtime_records_the_exit_of_a_leader_whose_console_host_lives_on() {
+    let marker = std::env::temp_dir().join(format!("hr-win-host-marker-{}", std::process::id()));
+    let _ = fs::remove_file(&marker);
+    let script = format!(
+        "import os, sys, time\nwhile not os.path.exists(r'{}'): time.sleep(0.05)\nsys.exit(5)",
+        marker.display()
+    );
+    let repo = Repo::new("host", &script, 300, 5);
+    let mut runtime = Runtime::start(&repo, None);
+    let leader = leader_pid(&runtime.receipt());
+    runtime.kill();
+    // The test holds the job, so its name outlives the leader.
+    let job = Job::open(&repo.job_name(), JobAccess::Query)
+        .unwrap()
+        .unwrap();
+    windows_job::wait_for(
+        &job,
+        "host before the exit",
+        &[
+            Expected::python("leader", leader),
+            Expected::console_host_of(leader),
+        ],
+        20,
+    );
+    // A process outside the job attaches to the hidden console of the leader, so its console host
+    // lives on after the leader.
+    let holder_script = format!(
+        "import ctypes, time\nkernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\nprint('ATTACHED' if kernel32.AttachConsole({leader}) else 'FAILED %d' % ctypes.get_last_error(), flush=True)\nwhile True: time.sleep(0.1)"
+    );
+    let mut holder = Reaper(
+        Command::new("python")
+            .args(["-c", &holder_script])
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(first_line(&mut holder.0, LINE_WAIT), "ATTACHED");
+    let supervisor = supervisor_of(repo.state());
+    supervisor.reconcile_all();
+    let running = repo.execution();
+    assert_eq!(
+        running.state,
+        ExecutionState::Running,
+        "{}",
+        repo.seen(&running)
+    );
+    assert_eq!(running.lease_released_at, None);
+
+    fs::write(&marker, "").unwrap();
+
+    let exited = repo.wait_for(ExecutionState::Exited, 30, Some(&supervisor));
+    let exit = exited.exit.unwrap();
+    assert_eq!(exit["exit_code"], 5, "{exit}");
+    assert_eq!(exit["source"], "process-handle", "{exit}");
+    assert!(exited.lease_released_at.is_some());
+    // The console host of the leader still runs in the job: the execution ended without it.
+    let after = windows_job::members(&job);
+    windows_job::print("host after the exit", &after);
+    assert!(
+        windows_job::composed_of(&after, &[Expected::console_host_of(leader)]),
+        "{}",
+        windows_job::text(&after)
+    );
+    let _ = fs::remove_file(&marker);
+}
+
+#[test]
 fn a_stop_begun_before_a_restart_is_finished_by_the_next_runtime() {
     let repo = Repo::new("resumed", IGNORES, 2, 6);
     let mut runtime = Runtime::start(&repo, None);
@@ -396,36 +621,118 @@ fn a_runtime_killed_after_the_spawn_is_followed_by_the_adoption_of_the_earliest_
     let job = Job::open(&repo.job_name(), JobAccess::Query)
         .unwrap()
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(20);
-    while job.processes().unwrap().len() < 2 && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert_eq!(job.processes().unwrap().len(), 2);
+    let leader = repo.printed_pid(20);
+    let before = windows_job::wait_for(
+        &job,
+        "adopt before the restart",
+        &[
+            Expected::python("leader", leader),
+            Expected::python_child_of("child of the leader", leader),
+            Expected::console_host_of(leader),
+        ],
+        20,
+    );
 
     runtime.kill();
 
     let supervisor = supervisor_of(repo.state());
     supervisor.reconcile_all();
     let running = repo.execution();
-    assert_eq!(running.state, ExecutionState::Running, "{running:?}");
+    assert_eq!(
+        running.state,
+        ExecutionState::Running,
+        "{}",
+        repo.seen(&running)
+    );
     let receipt = running.receipt.unwrap();
     assert_eq!(receipt["adopted"], true);
     assert_eq!(receipt["accounting"], "job-object");
-    let stdout = running.launch["logs"]["stdout"]
-        .as_str()
+    assert_eq!(receipt["identity"]["pid"], leader, "{receipt}");
+    // The adoption launched nothing: the members are the ones before the restart.
+    let after = windows_job::members(&job);
+    windows_job::print("adopt after the restart", &after);
+    assert_eq!(
+        windows_job::pids(&after),
+        windows_job::pids(&before),
+        "{}",
+        windows_job::text(&after)
+    );
+}
+
+#[test]
+fn an_adoption_takes_the_leader_its_runtime_launched_and_never_an_earlier_member() {
+    // A decoy older than the runtime and its leader, created by this test, not by the runtime.
+    let mut decoy = Reaper(
+        Command::new("python")
+            .args([
+                "-c",
+                "import time\nprint('READY', flush=True)\nwhile True: time.sleep(0.05)",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(first_line(&mut decoy.0, LINE_WAIT), "READY");
+    let decoy_process = Process::from_child(&decoy.0).unwrap();
+    let script = "import os, time\nprint(os.getpid(), flush=True)\nwhile True: time.sleep(0.05)";
+    let repo = Repo::new("decoy", script, 300, 5);
+    let mut runtime = Runtime::start(&repo, Some("execution.launch:launched"));
+    runtime.line(true, "PAUSED:");
+    let leader = repo.printed_pid(20);
+    // The decoy joins the job of the execution after the leader: the earliest created member is
+    // not the leader.
+    let job = Job::open(&repo.job_name(), JobAccess::Assign)
         .unwrap()
-        .to_owned();
-    let printed: i64 = fs::read_to_string(stdout)
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .trim()
-        .parse()
         .unwrap();
-    assert_eq!(receipt["identity"]["pid"], printed);
-    // The adoption launched nothing: the leader and its child are the only members.
-    assert_eq!(job.active_processes().unwrap(), 2);
+    job.assign(&decoy_process).unwrap();
+    let before = windows_job::wait_for(
+        &job,
+        "decoy before the restart",
+        &[
+            Expected::python("leader", leader),
+            Expected::python("decoy", decoy_process.pid()),
+            Expected::console_host_of(leader),
+        ],
+        20,
+    );
+    let leader_created = Process::open(leader)
+        .unwrap()
+        .unwrap()
+        .creation_time()
+        .unwrap();
+    assert!(decoy_process.creation_time().unwrap() < leader_created);
+
+    runtime.kill();
+
+    let supervisor = supervisor_of(repo.state());
+    supervisor.reconcile_all();
+    let running = repo.execution();
+    assert_eq!(
+        running.state,
+        ExecutionState::Running,
+        "{}",
+        repo.seen(&running)
+    );
+    let receipt = running.receipt.unwrap();
+    assert_eq!(receipt["adopted"], true);
+    assert_eq!(receipt["identity"]["pid"], leader, "{receipt}");
+    assert_eq!(
+        receipt["identity"]["start_time"],
+        leader_created.to_string(),
+        "{receipt}"
+    );
+    // The adoption launched nothing: the members are the ones before the restart.
+    let after = windows_job::members(&job);
+    windows_job::print("decoy after the restart", &after);
+    assert_eq!(
+        windows_job::pids(&after),
+        windows_job::pids(&before),
+        "{}",
+        windows_job::text(&after)
+    );
 }
 
 #[test]
@@ -463,15 +770,17 @@ fn a_process_at_the_pid_of_a_forged_identity_never_receives_a_signal() {
     runtime.receipt();
     runtime.kill();
     // A process outside the job takes the place of the leader in a forged identity.
-    let mut outsider = Command::new("python")
-        .args(["-c", OBEYS])
-        .creation_flags(CREATE_NEW_PROCESS_GROUP)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let pid = i64::from(outsider.id());
+    let mut outsider = Reaper(
+        Command::new("python")
+            .args(["-c", OBEYS])
+            .creation_flags(CREATE_NEW_PROCESS_GROUP)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = i64::from(outsider.0.id());
     repo.store()
         .execute(
             "UPDATE executions SET pid = ?2, pgid = ?2, start_time = '1' WHERE id = ?1",
@@ -487,7 +796,5 @@ fn a_process_at_the_pid_of_a_forged_identity_never_receives_a_signal() {
     assert_eq!(exit["source"], "stop-observed", "{exit}");
     assert!(exit["kill_sent_at"].is_string(), "{exit}");
     // The outsider obeys CTRL_BREAK by its exit: it is still running, so it got none.
-    assert_eq!(outsider.try_wait().unwrap(), None);
-    let _ = outsider.kill();
-    let _ = outsider.wait();
+    assert_eq!(outsider.0.try_wait().unwrap(), None);
 }
