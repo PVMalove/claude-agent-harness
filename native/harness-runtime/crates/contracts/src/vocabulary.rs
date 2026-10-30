@@ -93,3 +93,27 @@ vocabulary! {
         Unknown => "unknown",
     }
 }
+
+vocabulary! {
+    /// Verdict of `qa.evidence.verify` (`qa_evidence_verify` of ADR 0021, section 7) on the stored
+    /// QA evidence of one Release Gate pair.
+    QaEvidenceVerdict {
+        Ok => "ok",
+        Refused => "refused",
+    }
+}
+
+vocabulary! {
+    /// Why `qa.evidence.verify` refuses a Release Gate pair (ADR 0023, section 5; ADR 0026,
+    /// section 4).
+    QaEvidenceViolation {
+        PairNotRecorded => "pair_not_recorded",
+        NoFullQa => "no_full_qa",
+        SelectionNotFull => "selection_not_full",
+        StageNotPassed => "stage_not_passed",
+        StageCandidateMismatch => "stage_candidate_mismatch",
+        PlanMismatch => "plan_mismatch",
+        EvidenceUnverifiable => "evidence_unverifiable",
+        CiNotCollected => "ci_not_collected",
+    }
+}

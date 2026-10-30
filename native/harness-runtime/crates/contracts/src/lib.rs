@@ -15,4 +15,7 @@ pub use stage_evidence::{
     FileRef, SCHEMA as STAGE_EVIDENCE_SCHEMA, StageEvidence, StageEvidenceDocument,
     StageEvidenceError, StageKind, StageResult, StageSelection,
 };
-pub use vocabulary::{ErrorCode, ExecutionState, FailureDomain, OperationState};
+pub use vocabulary::{
+    ErrorCode, ExecutionState, FailureDomain, OperationState, QaEvidenceVerdict,
+    QaEvidenceViolation,
+};

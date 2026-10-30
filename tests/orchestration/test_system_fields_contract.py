@@ -759,6 +759,9 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "integration.evidence_verification": {
         "EvidenceVerification": constants.EvidenceVerification
     },
+    "qa_evidence.verdict": {"QaEvidenceVerdict": constants.QaEvidenceVerdict},
+    "qa_evidence.violation": {"QaEvidenceViolation": constants.QaEvidenceViolation},
+    "release_gate.refusal": {"ReleaseGateRefusal": constants.ReleaseGateRefusal},
     "ci.checkout": {"ci_source.Checkout": get_args(ci_source.Checkout)},
     "ci.verdict": {"ci_source.Outcome": get_args(ci_source.Outcome)},
     "ci.verdict_reason": {"ci_source.REASONS": ci_source.REASONS},

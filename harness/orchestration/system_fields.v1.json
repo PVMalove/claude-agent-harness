@@ -653,6 +653,41 @@
         "unverified": "Nothing confirmed the evidence, such as a check linked by hand, a failed local-QA gate or a result that failed its integrity recheck; it never satisfies verification."
       }
     },
+    "qa_evidence.verdict": {
+      "description": "Verdict of the read-only runtime operation qa.evidence.verify (qa_evidence_verify of ADR 0021, section 7) on the stored QA evidence of one Release Gate pair {candidate_sha, target_sha}; the Rust contracts crate and the Python coordinator hold exactly these values.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "ok": "A full QA run of exactly the pair is stored and verifies; the violations are empty and push and merge of the candidate may go on.",
+        "refused": "No stored evidence confirms a full QA run of the pair; the violations name why, and push and merge of the candidate are refused."
+      }
+    },
+    "qa_evidence.violation": {
+      "description": "Why qa.evidence.verify refuses a Release Gate pair (ADR 0023, section 5; ADR 0026, section 4); each violation names the evidence it was found in.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "pair_not_recorded": "The store holds no Release Gate pair record with a candidate_tree_sha for the pair.",
+        "no_full_qa": "No accepted QA run, verified local-QA run or collected CI check of exactly the pair is stored; developer and review checks and the qa-gate marker never confirm a pair.",
+        "selection_not_full": "A stage of the run selected only some tests (focused or failed-only).",
+        "stage_not_passed": "A stage failed or did not run, or an approved command has no stage.",
+        "stage_candidate_mismatch": "A stage names another candidate than the pair.",
+        "plan_mismatch": "A stage names another verification plan or image than the QA brief pinned, or the stages name different environments.",
+        "evidence_unverifiable": "The QA log, its stage-evidence document or an output stream is missing from the store, breaks its schema or does not match its sha256.",
+        "ci_not_collected": "A linked CI check of the pair was not accepted by integration collect-ci."
+      }
+    },
+    "release_gate.refusal": {
+      "description": "Why the Python Release Gate refuses the handoff of a merge, or blocks after one, on the Git facts of the pair (ADR 0026, section 4).",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "branch_head_mismatch": "The remote issue branch is not the candidate_sha of the pair.",
+        "target_not_in_candidate_history": "The target_sha of the pair is not an ancestor of the candidate.",
+        "evidence_refused": "qa.evidence.verify did not answer ok for the pair.",
+        "merged_tree_mismatch": "The tree of the commit the merge created differs from the candidate_tree_sha of the pair; the next merge from the target branch needs a new full QA of its head."
+      }
+    },
     "local_qa.attempt_state": {
       "description": "State of an integration local-QA attempt, of its result and of a request's pair observation; only a result links local-qa evidence to the pair.",
       "automatic_decisions": true,
