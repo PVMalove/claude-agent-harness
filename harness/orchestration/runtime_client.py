@@ -68,8 +68,12 @@ EXECUTION_STATES = ("launching", "running", "stopping", "exited", "lost", "unkno
 # minor 2 adds ``execution.launch`` and ``execution.observe`` of the process supervisor (ADR 0022);
 # minor 3 adds ``container.observe``, ``container.objects`` and ``container.remove`` of the
 # container executor in the runtime (ADR 0022, section 4); minor 5 adds the writable recovery records
-# of a batch, the feature ``state.recovery`` (ADR 0026).
-PROTOCOL_VERSION = (1, 5)
+# of a batch, the feature ``state.recovery`` (ADR 0026); minor 6 adds the read-only
+# ``qa.evidence.verify`` (``qa_evidence_verify`` of ADR 0021, section 7), the verdict on the stored QA
+# evidence of a Release Gate pair.
+PROTOCOL_VERSION = (1, 6)
+# The runtime operation that judges the stored QA evidence of a Release Gate pair.
+QA_EVIDENCE_VERIFY = "qa.evidence.verify"
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 MAX_SOCKET_PATH_BYTES = 100
 _FRAME_HEADER = struct.Struct(">I")
@@ -162,7 +166,9 @@ def git_common_dir(repo_root: Path) -> Path:
             git_dir = (repo_root / pointer.removeprefix("gitdir:").strip()).resolve()
             commondir = git_dir / "commondir"
             if commondir.is_file():
-                return (git_dir / commondir.read_text(encoding="utf-8").strip()).resolve()
+                return (
+                    git_dir / commondir.read_text(encoding="utf-8").strip()
+                ).resolve()
             return git_dir
     raise _not_a_repository(repo_root)
 
@@ -556,7 +562,9 @@ def _check_directory(directory: Path) -> None:
     try:
         info = os.lstat(directory)
     except FileNotFoundError as exc:
-        raise _TransportFailure(f"the runtime directory {directory} does not exist") from exc
+        raise _TransportFailure(
+            f"the runtime directory {directory} does not exist"
+        ) from exc
     except OSError as exc:
         raise _TransportFailure(f"cannot read the runtime directory: {exc}") from exc
     problem = (

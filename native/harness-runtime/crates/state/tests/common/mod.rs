@@ -130,3 +130,5 @@ impl Drop for Repo {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+
+pub mod qa_store;

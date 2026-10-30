@@ -498,6 +498,22 @@ impl Snapshot {
         })
     }
 
+    /// The bytes of the artifact at `path` (a QA log, a stage-evidence document, an output
+    /// stream), as the store was when the snapshot was opened; `None` when it holds none.
+    ///
+    /// # Errors
+    /// The store cannot be read.
+    pub fn artifact(&self, path: &str) -> Result<Option<Vec<u8>>, ReadError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT bytes FROM artifact WHERE path = ?1",
+                [path],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// End the read transaction.
     pub fn close(self) {
         let _ = self.connection.execute_batch("COMMIT");

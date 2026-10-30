@@ -19,6 +19,9 @@ use contracts::{
 use ipc::{Environment, PeerId, Server, StartError, resolve_paths};
 use serde_json::{Value, json};
 
+#[path = "../../state/tests/common/qa_store.rs"]
+mod qa_store;
+
 /// The client end of the transport under test.
 #[cfg(unix)]
 type Client = UnixStream;
@@ -390,6 +393,14 @@ fn copy_tree(from: &Path, to: &Path) {
 /// The fixture state of the Python 1.x ledger, without its QA lease and queue, cut over to the
 /// store of `fixture`; the state directory.
 fn cut_over(fixture: &Fixture) -> PathBuf {
+    let state_dir = legacy_state(fixture);
+    state::migrate::run(&fixture.root).unwrap();
+    state_dir
+}
+
+/// The fixture state of the Python 1.x ledger, without its QA lease and queue, still in the
+/// file-ledger epoch; the state directory.
+fn legacy_state(fixture: &Fixture) -> PathBuf {
     let state_dir = fixture.root.join(".harness/orchestration/state");
     copy_tree(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../state/tests/fixtures/legacy_v3"),
@@ -404,7 +415,6 @@ fn cut_over(fixture: &Fixture) -> PathBuf {
             }
         }
     }
-    state::migrate::run(&fixture.root).unwrap();
     state_dir
 }
 
@@ -545,4 +555,100 @@ fn a_failing_test_keeps_its_message_when_the_server_thread_failed_too() {
     };
 
     panic!("the test failed first");
+}
+
+/// Serve the state of `fixture`, connect and say `hello`; the features `hello` named.
+fn serving(fixture: &Fixture, state_dir: PathBuf) -> (Running, Client, Vec<Value>) {
+    let paths = resolve_paths(&fixture.root, &Environment::with_xdg(&fixture.xdg)).unwrap();
+    let runtime = Running::start(Server::bind_serving(paths, Some(state_dir)).unwrap());
+    let mut stream = runtime.connect();
+    let greeting = exchange(&mut stream, &hello(&fixture.root, &runtime.token, 1, 1));
+    assert_eq!(greeting.status, Status::Ok);
+    let features = greeting.result.unwrap()["features"]
+        .as_array()
+        .unwrap()
+        .clone();
+    (runtime, stream, features)
+}
+
+fn verify(stream: &mut Client, candidate: &str, target: &str) -> Response {
+    exchange(
+        stream,
+        &request(
+            "qa.evidence.verify",
+            Some(json!({"candidate_sha": candidate, "target_sha": target})),
+        ),
+    )
+}
+
+/// `qa.evidence.verify` over the transport judges only the stored evidence of the pair: an
+/// accepted full QA run of exactly the pair is `ok`, an unknown pair is refused, and neither
+/// moves the revision of the store.
+#[test]
+fn qa_evidence_verify_judges_the_stored_pair_and_writes_nothing() {
+    let fixture = Fixture::new("qa-evidence");
+    let state_dir = legacy_state(&fixture);
+    let pointer = state::legacy::read_pointer(&state_dir).unwrap().unwrap();
+    let run = qa_store::accepted_qa(qa_store::passed_stages());
+    qa_store::write_legacy(
+        &state_dir.join("generations").join(pointer.generation),
+        &run,
+    );
+    state::migrate::run(&fixture.root).unwrap();
+    let (_runtime, mut stream, features) = serving(&fixture, state_dir);
+    let before = exchange(
+        &mut stream,
+        &request("state.read", Some(json!({"paths": []}))),
+    );
+
+    let confirmed = verify(&mut stream, qa_store::CANDIDATE, qa_store::TARGET);
+    let unknown = verify(&mut stream, &"d".repeat(40), qa_store::TARGET);
+    let extra = exchange(
+        &mut stream,
+        &request(
+            "qa.evidence.verify",
+            Some(
+                json!({"candidate_sha": qa_store::CANDIDATE, "target_sha": qa_store::TARGET,
+                        "fallback": true}),
+            ),
+        ),
+    );
+    let bad_sha = verify(&mut stream, "HEAD", qa_store::TARGET);
+    let after = exchange(
+        &mut stream,
+        &request("state.read", Some(json!({"paths": []}))),
+    );
+
+    assert!(features.contains(&json!("qa.evidence.verify")));
+    assert_eq!(confirmed.status, Status::Ok, "{confirmed:?}");
+    let confirmed = confirmed.result.unwrap();
+    assert_eq!(confirmed["verdict"], "ok", "{confirmed}");
+    assert_eq!(confirmed["confirmed_by"]["source"], "original-qa");
+    assert_eq!(confirmed["pair"]["candidate_tree_sha"], qa_store::TREE);
+    assert_eq!(unknown.status, Status::Ok, "{unknown:?}");
+    let unknown = unknown.result.unwrap();
+    assert_eq!(unknown["verdict"], "refused");
+    let codes: Vec<&str> = unknown["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|violation| violation["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["pair_not_recorded", "no_full_qa"]);
+    assert_eq!(error_code(&extra), ErrorCode::MalformedRequest);
+    assert_eq!(error_code(&bad_sha), ErrorCode::MalformedRequest);
+    assert_eq!(before.revision, after.revision);
+}
+
+/// In the file-ledger epoch the store is not the authority: the runtime has no verdict to give.
+#[test]
+fn qa_evidence_verify_of_the_file_ledger_is_not_found() {
+    let fixture = Fixture::new("qa-evidence-file-ledger");
+    let state_dir = legacy_state(&fixture);
+    let (_runtime, mut stream, features) = serving(&fixture, state_dir);
+
+    let answer = verify(&mut stream, qa_store::CANDIDATE, qa_store::TARGET);
+
+    assert!(!features.contains(&json!("qa.evidence.verify")));
+    assert_eq!(error_code(&answer), ErrorCode::NotFound);
 }

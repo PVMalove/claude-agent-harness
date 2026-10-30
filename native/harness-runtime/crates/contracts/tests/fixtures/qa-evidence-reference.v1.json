@@ -1,0 +1,47 @@
+{
+  "contract": "qa-evidence-reference.v1",
+  "description": "How a QA report links its log and how the log links its stage-evidence document: the report output names the log by (sha256:<hex>) (qa_lane._qa_report), and the last trailer line of the log names the document (gate_runner.format_evidence_trailer). The Python tests rebuild every output and trailer from its inputs; the Rust runtime (state::qa_evidence) parses them.",
+  "report_outputs": [
+    {
+      "case": "a passed gate",
+      "artifact": "/repo/.harness/orchestration/state/generations/generation-00000001/qa-artifacts/724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4.log",
+      "checksum": "724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4",
+      "check_result": "pass",
+      "output": "QA gate passed; full sanitised output: /repo/.harness/orchestration/state/generations/generation-00000001/qa-artifacts/724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4.log (sha256:724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4)",
+      "log_sha256": "724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4"
+    },
+    {
+      "case": "a failed gate",
+      "artifact": "/repo/.harness/orchestration/state/generations/generation-00000001/qa-artifacts/724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4.log",
+      "checksum": "724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4",
+      "check_result": "fail",
+      "output": "QA gate failed; full sanitised output: /repo/.harness/orchestration/state/generations/generation-00000001/qa-artifacts/724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4.log (sha256:724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4)",
+      "log_sha256": "724d658d71faec1105e4a4137fd891a2bab5c50402bf366bc70484915e85cdd4"
+    },
+    {
+      "case": "no reference",
+      "output": "QA gate passed",
+      "log_sha256": null
+    },
+    {
+      "case": "a short digest",
+      "output": "QA gate passed; full sanitised output: x.log (sha256:abc)",
+      "log_sha256": null
+    }
+  ],
+  "logs": [
+    {
+      "case": "a log with its trailer",
+      "log": "$ make lint\nexit_code=0\nall checks passed\nstage-evidence: qa-artifacts/0986979e42f7b5fbef5b2dc1b762c5bfacf2b769de75faa08f647caa72507227.stage-evidence.json sha256:0986979e42f7b5fbef5b2dc1b762c5bfacf2b769de75faa08f647caa72507227\n",
+      "trailer": {
+        "path": "qa-artifacts/0986979e42f7b5fbef5b2dc1b762c5bfacf2b769de75faa08f647caa72507227.stage-evidence.json",
+        "sha256": "0986979e42f7b5fbef5b2dc1b762c5bfacf2b769de75faa08f647caa72507227"
+      }
+    },
+    {
+      "case": "a log without a trailer",
+      "log": "$ make lint\nexit_code=0\nall checks passed\n",
+      "trailer": null
+    }
+  ]
+}
