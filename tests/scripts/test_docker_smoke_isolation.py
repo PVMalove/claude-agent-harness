@@ -1,8 +1,9 @@
-"""The real container smoke stays out of every default pytest run (#710).
+"""The real container smokes stay out of every default pytest run (#710, #811).
 
-pyproject.toml registers the `docker_smoke` marker and deselects it through `addopts`. Only an
-explicit `-m docker_smoke` on the command line (the CI docker-smoke job) selects it, so
-scripts/verify.py, `make test` and the diff-coverage gate never run it.
+pyproject.toml registers the `docker_smoke` and `podman_smoke` markers and deselects both through
+`addopts`. Only an explicit `-m docker_smoke` (the CI docker-smoke job) or `-m podman_smoke` (the
+podman-smoke workflow on the self-hosted runner) on the command line selects one, so
+scripts/verify.py, `make test` and the diff-coverage gate never run them.
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ import pytest
 
 @pytest.mark.docker_smoke
 def test_marked():
+    pass
+
+
+@pytest.mark.podman_smoke
+def test_podman_marked():
     pass
 
 
@@ -71,6 +77,12 @@ def test_the_repository_configuration_deselects_the_smoke_by_default(
 
 def test_an_explicit_marker_selection_runs_only_the_smoke(tmp_path: Path) -> None:
     assert _selected(tmp_path, "-m", "docker_smoke") == ["test_marked"]
+
+
+def test_an_explicit_podman_marker_selection_runs_only_the_podman_smoke(
+    tmp_path: Path,
+) -> None:
+    assert _selected(tmp_path, "-m", "podman_smoke") == ["test_podman_marked"]
 
 
 def test_verify_adds_no_marker_selection_of_its_own() -> None:

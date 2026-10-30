@@ -38,11 +38,13 @@ exclude = ["^harness/repo_map/tree_sitter_worker\\.py$"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The real container smoke (#710) needs a Docker engine and network: every default run deselects
-# it, and only the CI docker-smoke job selects it with an explicit `-m docker_smoke`.
-addopts = ["-m", "not docker_smoke"]
+# The real container smokes need an engine and network: every default run deselects them. Only the
+# CI docker-smoke job selects `-m docker_smoke` (#710), and only the podman-smoke workflow on the
+# self-hosted Fedora runner selects `-m podman_smoke` (#811).
+addopts = ["-m", "not docker_smoke and not podman_smoke"]
 markers = [
     "docker_smoke: real Docker smoke of the container executor; run only with -m docker_smoke",
+    "podman_smoke: real rootless Podman smoke on Fedora with SELinux enforcing; run only with -m podman_smoke",
 ]
 
 [tool.ruff.lint.per-file-ignores]
