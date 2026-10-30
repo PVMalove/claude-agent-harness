@@ -1,6 +1,7 @@
 //! The Linux processes of the supervisor: the spawn in an own process group with the labels, the
-//! identity read from `/proc/<pid>/stat`, and the scan of `/proc/*/environ` that finds a labelled
-//! group leader again after a restart (ADR 0022, sections 2 and 3).
+//! identity read from `/proc/<pid>/stat`, the scan of `/proc/*/environ` that finds a labelled
+//! group leader again after a restart, and the passes over `/proc/*/stat` that tell whether a
+//! process group has a member that is no zombie (ADR 0022, sections 2 and 3).
 //!
 //! A child is spawned with `process_group(0)`: it leads a new process group, whose id is its pid,
 //! in the session of the runtime. `std::process::Child` never kills on drop, so a runtime that
@@ -14,6 +15,7 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+use nix::errno::Errno;
 use state::identity::{Identity, Observer};
 
 pub use crate::launch::{LABEL_DISPATCH, LABEL_OPERATION, Spec};
@@ -137,9 +139,162 @@ pub fn scan(operation_id: &str, not_before: Option<u64>) -> io::Result<Option<(i
     Ok(first.map(|(_, pid, start_time)| (pid, start_time)))
 }
 
+/// What two passes over `/proc` show of the members of a process group.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Members {
+    /// A process of the group has a thread that is neither a zombie nor dead.
+    Live,
+    /// Two passes found no live member, on the procfs of the runtime's own PID namespace without
+    /// `hidepid`: only zombies are left, or nothing.
+    NoLiveMember,
+    /// The passes prove nothing, for this reason.
+    Unproven(String),
+}
+
+/// Whether a process or a thread in `state` (field 3 of its `stat`) has ended.
+fn ended(state: char) -> bool {
+    matches!(state, 'Z' | 'X')
+}
+
+/// Whether the error of a read in `/proc` means that the process or the thread is gone.
+fn gone(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(Errno::ESRCH as i32)
+}
+
+/// The state and the process group of the process or thread whose `stat` is at `path`; `None`
+/// when it is gone.
+fn stat_at(path: &Path) -> Result<Option<(char, i64)>, String> {
+    match fs::read_to_string(path) {
+        Ok(line) => parse_stat(&line)
+            .map(|(state, pgid, _)| Some((state, pgid)))
+            .ok_or_else(|| format!("{} cannot be parsed", path.display())),
+        Err(err) if gone(&err) => Ok(None),
+        Err(err) => Err(format!("{} cannot be read: {err}", path.display())),
+    }
+}
+
+/// Whether a thread of the process whose thread directory is `task` has not ended. A process
+/// whose main thread ended shows `Z` in its own `stat` while another thread still runs.
+fn thread_alive(task: &Path) -> Result<bool, String> {
+    let threads = match fs::read_dir(task) {
+        Ok(threads) => threads,
+        Err(err) if gone(&err) => return Ok(false),
+        Err(err) => return Err(format!("{} cannot be listed: {err}", task.display())),
+    };
+    for thread in threads {
+        let thread = match thread {
+            Ok(thread) => thread,
+            Err(err) if gone(&err) => return Ok(false),
+            Err(err) => return Err(format!("{} cannot be listed: {err}", task.display())),
+        };
+        if stat_at(&thread.path().join("stat"))?.is_some_and(|(state, _)| !ended(state)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// One pass over `/proc`: whether a process of the group `pgid` (field 5 of its `stat`) has a
+/// thread that has not ended. A process that is gone during the pass is skipped.
+fn pass(pgid: i64) -> Result<bool, String> {
+    let listing = |err: io::Error| format!("/proc cannot be listed: {err}");
+    for entry in fs::read_dir("/proc").map_err(listing)? {
+        let entry = entry.map_err(listing)?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_none_or(|name| name.parse::<i64>().is_err())
+        {
+            continue;
+        }
+        let Some((state, group)) = stat_at(&entry.path().join("stat"))? else {
+            continue;
+        };
+        if group == pgid && (!ended(state) || thread_alive(&entry.path().join("task"))?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether the last `proc` mount at `/proc` in the mount table `mounts` hides the processes of
+/// other users (`hidepid` other than `0` or `off`); `true` when no such mount is listed.
+fn hides_pids(mounts: &str) -> bool {
+    let options = mounts.lines().rev().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        (fields.get(1) == Some(&"/proc") && fields.get(2) == Some(&"proc"))
+            .then(|| fields.get(3).copied().unwrap_or_default())
+    });
+    options.is_none_or(|options| {
+        options.split(',').any(|option| {
+            option
+                .strip_prefix("hidepid=")
+                .is_some_and(|value| !matches!(value, "0" | "off"))
+        })
+    })
+}
+
+/// Why `/proc` cannot prove that a group has no live member, if it cannot: it numbers the
+/// processes of another PID namespace, or it hides the processes of other users.
+fn untrusted() -> Option<String> {
+    match fs::read_link("/proc/self") {
+        Ok(own) if own.to_str() == Some(std::process::id().to_string().as_str()) => {}
+        Ok(own) => {
+            return Some(format!(
+                "/proc numbers the processes of another PID namespace: /proc/self is {}",
+                own.display()
+            ));
+        }
+        Err(err) => return Some(format!("/proc/self cannot be read: {err}")),
+    }
+    match fs::read_to_string("/proc/self/mounts") {
+        Ok(mounts) if hides_pids(&mounts) => {
+            Some("/proc is mounted with hidepid: the processes of other users are hidden".into())
+        }
+        Ok(_) => None,
+        Err(err) => Some(format!("/proc/self/mounts cannot be read: {err}")),
+    }
+}
+
+/// Whether a member of the process group `pgid` lives. `killpg` reaches a group whose members
+/// are all zombies, so the group is empty only when two passes in a row find no member with a
+/// thread that has not ended: a member that forks a child with a lower pid and exits during one
+/// pass is seen by the other. Only the procfs of the runtime's own PID namespace without
+/// `hidepid`, read without an error, proves that; anything else is `Unproven`.
+pub fn members(pgid: i64) -> Members {
+    for _ in 0..2 {
+        match pass(pgid) {
+            Ok(false) => {}
+            Ok(true) => return Members::Live,
+            Err(reason) => return Members::Unproven(reason),
+        }
+    }
+    untrusted().map_or(Members::NoLiveMember, Members::Unproven)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidepid_on_the_last_proc_mount_hides_the_processes_of_other_users() {
+        let mount = |options: &str| format!("proc /proc proc {options} 0 0\n");
+
+        assert!(hides_pids(&mount("rw,nosuid,hidepid=2")));
+        assert!(hides_pids(&mount("rw,hidepid=invisible,gid=10")));
+        assert!(!hides_pids(&mount("rw,hidepid=0")));
+        assert!(!hides_pids(&mount("rw,hidepid=off")));
+        assert!(!hides_pids(&mount("rw,nosuid,nodev,noexec,relatime")));
+        // Of two stacked mounts at /proc, the last one is the one a path resolves to.
+        let stacked = format!("{}{}", mount("rw,hidepid=2"), mount("rw,relatime"));
+        assert!(!hides_pids(&stacked));
+        let stacked = format!("{}{}", mount("rw,relatime"), mount("rw,hidepid=1"));
+        assert!(hides_pids(&stacked));
+        // A proc mount elsewhere, or a mount of another type at /proc, is not the one.
+        assert!(hides_pids("proc /mnt/proc proc rw 0 0\n"));
+        assert!(hides_pids("tmpfs /proc tmpfs rw 0 0\n"));
+        assert!(hides_pids(""));
+    }
 
     #[test]
     fn the_stat_fields_are_counted_after_the_last_parenthesis() {

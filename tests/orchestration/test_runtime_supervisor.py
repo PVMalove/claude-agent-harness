@@ -282,6 +282,65 @@ def test_a_runtime_killed_after_the_sigterm_and_before_its_record_stops_the_exec
     ]
 
 
+def wait_zombie(pid: int, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    state = ""
+    while time.monotonic() < deadline:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        state = stat.rsplit(")", 1)[1].split()[0]
+        if state == "Z":
+            return
+        time.sleep(0.05)
+    pytest.fail(f"the process {pid} is no zombie: {state!r}")
+
+
+def holds(pid: int, start_time: str) -> bool:
+    """Whether the process that started at ``start_time`` still holds ``pid``, a zombie included."""
+    try:
+        return proc_start_time(pid) == start_time
+    except OSError:
+        return False
+
+
+def test_a_refused_stopping_record_after_the_sigterm_is_retried_and_the_child_is_reaped(
+    supervised: Factory,
+) -> None:
+    step = "execution.stop:stopping"
+    repo = supervised(
+        timeout=2,
+        grace=10,
+        env={
+            "HARNESS_RUNTIME_TEST_PAUSE_AT": step,
+            "HARNESS_RUNTIME_TEST_FAIL_AT": step,
+        },
+    )
+    sent(repo.send())
+    (launch,) = repo.wait_launches(1)
+    repo.runtime.wait_paused(step, timeout=15)
+
+    # The SIGTERM ended the leader; its record is not written, and nothing reaped the leader.
+    wait_zombie(launch.pid)
+    start_time = proc_start_time(launch.pid)
+    assert repo.rows(
+        "SELECT state FROM executions WHERE dispatch_id = ?", repo.dispatch
+    ) == [("running",)]
+    # The first record of the stop gets a repeatable refusal; the stop repeats it.
+    repo.runtime.resume()
+
+    exited = repo.wait_execution("exited", timeout=20)
+    assert dig(exited, "exit", "source") == "wait-status"
+    assert dig(exited, "exit", "signal") == 15
+    assert dig(exited, "exit", "kill_sent_at") is None
+    assert dig(exited, "lease", "released_at") is not None
+    assert not holds(launch.pid, start_time)
+    assert repo.execution_actions() == [
+        "execution-launching",
+        "execution-running",
+        "execution-stopping",
+        "execution-exited",
+    ]
+
+
 def test_an_adopted_leader_that_exits_before_its_group_keeps_the_lease_until_the_group_ends(
     supervised: Factory,
 ) -> None:

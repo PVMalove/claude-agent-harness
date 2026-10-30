@@ -292,6 +292,12 @@ pub(crate) fn release_leader(supervisor: &Supervisor, id: &str) {
     guard(&supervisor.inner.held).remove(id);
 }
 
+/// Close the handles of a leader that a watcher gives up without the proof of its exit, as the
+/// end of the watcher always did: the job object keeps the execution, and reconcile observes it.
+pub(crate) fn reap(launched: Launched) {
+    drop(launched);
+}
+
 /// The exit a stop or a watcher proves: the exit code of a leader this runtime held, as an
 /// unsigned `DWORD`. Windows has no signal.
 pub(crate) struct Exit {

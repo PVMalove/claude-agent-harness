@@ -18,11 +18,16 @@
 //! A leader that exits by itself ends its execution only with its group: a member that outlives
 //! it keeps the row `running` and the lease held until it ends, or until the deadline stops it.
 //! A store that refuses an outcome for good leaves the row `unknown` with the lease held and
-//! names the cause on the stderr of the runtime.
+//! names the cause on the stderr of the runtime. The record of `stopping` follows the same rules:
+//! a repeatable refusal is tried again for a bounded time, and a refusal for good leaves the row
+//! `unknown` with the fact `unrecorded: stopping` and sends no kill. A watcher never drops its
+//! child unreaped: when the stop ends without the proof of the exit, `os::reap` takes the child,
+//! and reconcile observes the execution from its identity.
 //!
-//! Debug-build hook (`HARNESS_RUNTIME_TEST_PAUSE_AT`, once per process):
-//! `execution.stop:signalled`, the SIGTERM of a deadline stop is sent and its record is not
-//! written yet.
+//! Debug-build hooks (`HARNESS_RUNTIME_TEST_PAUSE_AT`, `HARNESS_RUNTIME_TEST_FAIL_AT`, once per
+//! process): `execution.stop:signalled`, a pause only, the SIGTERM of a deadline stop is sent and
+//! its record is not written yet; `execution.stop:stopping`, the record of `stopping` begins, and
+//! an injected failure there is a repeatable refusal.
 //!
 //! The signals, the group and the leader come from the platform layer (`crate::os`); this module
 //! holds the order of the steps and the records, which are the same on every platform. On Windows
@@ -46,7 +51,7 @@ use state::hooks;
 use state::time::{iso_from_micros, iso_now, now_micros, parse_rfc3339};
 
 use crate::Supervisor;
-use crate::launch::{guard, sql};
+use crate::launch::{guard, injected, sql};
 use crate::os::{self, Group, Leader};
 
 /// How often a watcher or a stop looks at the process.
@@ -134,6 +139,9 @@ impl Supervisor {
         to: ExecutionState,
         change: Change,
     ) -> Result<Option<Execution>, ErrorBody> {
+        if to == ExecutionState::Stopping {
+            hooks::reach_once("execution.stop:stopping").map_err(|err| injected(&err))?;
+        }
         let lock = self.lock_of(id);
         let _held = guard(&lock);
         let mut connection = executions::connect(self.state()?)?;
@@ -241,10 +249,15 @@ impl Supervisor {
                     return;
                 }
                 // The exit is lost: reconcile observes the identity from now on.
-                Seen::Unproven(_) => return,
+                Seen::Unproven(_) => {
+                    os::reap(child);
+                    return;
+                }
                 // The leader runs, or a member of its group outlives it: both end at the deadline.
+                // A stop that ended without the proof of the exit leaves the child to `reap`.
                 _ if past(&execution.execution_deadline) => {
                     if self.stop(execution, Leader::Child(&mut child)) {
+                        os::reap(child);
                         return;
                     }
                 }
@@ -313,18 +326,20 @@ impl Supervisor {
             facts: Value::Object(stopped),
             ..Change::default()
         };
-        let Ok(Some(moved)) = self.locked(
+        // A refusal for good leaves the row `unknown` with the lease held, and no kill follows:
+        // reconcile observes the execution from then on.
+        if !self.record(
             id,
             ExecutionState::Running,
             ExecutionState::Stopping,
-            stopping,
-        ) else {
+            &stopping,
+        ) {
             return true;
-        };
+        }
         let plan = StopPlan {
             term_sent_at,
             term_at,
-            grace_seconds: moved.stop_grace_seconds,
+            grace_seconds: execution.stop_grace_seconds,
             term,
         };
         self.conclude(id, &group, leader, &plan);
