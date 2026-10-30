@@ -152,6 +152,46 @@ def test_hash_changes_with_the_policy() -> None:
     assert len(digests) == 4
 
 
+_RUST_GOLDEN = (
+    Path(__file__).resolve().parents[2]
+    / "native/harness-runtime/crates/supervisor/tests/fixtures/hook_policy_golden.json"
+)
+
+
+def _rust_golden() -> dict[str, list[object]]:
+    golden: dict[str, list[object]] = json.loads(_RUST_GOLDEN.read_text(encoding="utf-8"))
+    return golden
+
+
+def test_python_normalizes_and_hashes_the_rust_golden_vectors() -> None:
+    """``supervisor::hook_policy`` of the Rust runtime recomputes the pinned digest; the Rust test
+    ``crates/supervisor/tests/hook_policy.rs`` checks the same vectors."""
+    for case in _rust_golden()["normalized"]:
+        assert isinstance(case, dict)
+        policy = hook_policy.normalize_policy(case.get("policy"))
+
+        assert policy == case["normalized"], case["name"]
+        assert hook_policy.hook_policy_sha256(policy) == case["sha256"], case["name"]
+
+
+def test_python_refuses_every_rust_golden_refusal() -> None:
+    for value in _rust_golden()["refused"]:
+        with pytest.raises(PolicyError):
+            hook_policy.normalize_policy(value)
+
+
+def test_the_golden_escalation_order_differs_from_utf8_order() -> None:
+    """The escalation sort key escapes non-ASCII and astral characters, so its order is not the
+    order of the UTF-8 text; a Rust sort by the wrong form would fail the vector."""
+    cases = {case["name"]: case for case in _rust_golden()["normalized"] if isinstance(case, dict)}
+    escalations = cases["non-ascii-and-astral-paths"]["normalized"]["escalations"]
+
+    by_utf8 = sorted(
+        escalations, key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False)
+    )
+    assert by_utf8 != escalations
+
+
 @pytest.mark.parametrize(
     "value",
     [

@@ -1,0 +1,110 @@
+{
+  "normalized": [
+    {
+      "name": "absent",
+      "normalized": {"profile": "standard", "escalations": []},
+      "sha256": "70821d460742d4ce96476e9c0be4baf935c629eb5cda39985798a3e764c5c313"
+    },
+    {
+      "name": "null",
+      "policy": null,
+      "normalized": {"profile": "standard", "escalations": []},
+      "sha256": "70821d460742d4ce96476e9c0be4baf935c629eb5cda39985798a3e764c5c313"
+    },
+    {
+      "name": "profile-only",
+      "policy": {"profile": "strict"},
+      "normalized": {"profile": "strict", "escalations": []},
+      "sha256": "14a3c2c615c47eab0f0538a7de21920d4c595a5b4056d5bb897439a1b1c8834a"
+    },
+    {
+      "name": "reordered-and-duplicated-escalations",
+      "policy": {
+        "profile": "minimal",
+        "escalations": [
+          {"roles": ["qa"], "profile": "standard"},
+          {"paths": ["harness/**", "docs/*"], "profile": "standard"},
+          {"profile": "strict", "roles": ["review", "developer"], "paths": ["src/*"]},
+          {"roles": ["qa"], "profile": "standard"}
+        ]
+      },
+      "normalized": {
+        "profile": "minimal",
+        "escalations": [
+          {"paths": ["docs/*", "harness/**"], "roles": [], "profile": "standard"},
+          {"paths": ["src/*"], "roles": ["developer", "review"], "profile": "strict"},
+          {"paths": [], "roles": ["qa"], "profile": "standard"},
+          {"paths": [], "roles": ["qa"], "profile": "standard"}
+        ]
+      },
+      "sha256": "f57256624407c2097badb1986155617e57de846fc1dabc2e5a6b40b8785b8f85"
+    },
+    {
+      "name": "paths-only",
+      "policy": {"profile": "standard", "escalations": [{"paths": ["b/*", "a/*"], "profile": "strict"}]},
+      "normalized": {"profile": "standard", "escalations": [{"paths": ["a/*", "b/*"], "roles": [], "profile": "strict"}]},
+      "sha256": "f7a0bc5ba63c188288949f71db461f96eec9b4ffc299f0500e7ac26e7a6cc90f"
+    },
+    {
+      "name": "roles-only",
+      "policy": {"profile": "standard", "escalations": [{"roles": ["qa", "coordinator"], "profile": "standard"}]},
+      "normalized": {"profile": "standard", "escalations": [{"paths": [], "roles": ["coordinator", "qa"], "profile": "standard"}]},
+      "sha256": "918198eef09d3fc1711631c2fde488c615c75825c2d71cee5c663b05878fba34"
+    },
+    {
+      "name": "non-ascii-and-astral-paths",
+      "policy": {
+        "profile": "standard",
+        "escalations": [
+          {"paths": ["z/*"], "profile": "strict"},
+          {"paths": ["ｚ"], "profile": "strict"},
+          {"paths": ["é/*"], "profile": "strict"},
+          {"paths": ["😀"], "profile": "strict"},
+          {"paths": ["😀/x", "ｚ/x", "путь/*"], "profile": "standard"}
+        ]
+      },
+      "normalized": {
+        "profile": "standard",
+        "escalations": [
+          {"paths": ["é/*"], "roles": [], "profile": "strict"},
+          {"paths": ["путь/*", "ｚ/x", "😀/x"], "roles": [], "profile": "standard"},
+          {"paths": ["😀"], "roles": [], "profile": "strict"},
+          {"paths": ["ｚ"], "roles": [], "profile": "strict"},
+          {"paths": ["z/*"], "roles": [], "profile": "strict"}
+        ]
+      },
+      "sha256": "a899c35d4532ffc653019060a2da4472765df45c6e7474e3456e624367349afc"
+    },
+    {
+      "name": "quote-and-backslash-paths",
+      "policy": {
+        "profile": "standard",
+        "escalations": [
+          {"paths": ["a\"b/*"], "profile": "strict"},
+          {"paths": ["dir\\x"], "profile": "strict"}
+        ]
+      },
+      "normalized": {
+        "profile": "standard",
+        "escalations": [
+          {"paths": ["a\"b/*"], "roles": [], "profile": "strict"},
+          {"paths": ["dir\\x"], "roles": [], "profile": "strict"}
+        ]
+      },
+      "sha256": "f9dfea31d263b4b0a5f575ea2f3394df13dac50adb21d21db0734530c67fe2cd"
+    }
+  ],
+  "refused": [
+    "strict",
+    [],
+    {"escalations": []},
+    {"profile": 5},
+    {"profile": "standard", "extra": true},
+    {"profile": "standard", "escalations": "x"},
+    {"profile": "standard", "escalations": ["x"]},
+    {"profile": "standard", "escalations": [{"paths": ["a"]}]},
+    {"profile": "standard", "escalations": [{"paths": "a", "profile": "strict"}]},
+    {"profile": "standard", "escalations": [{"roles": [1], "profile": "strict"}]},
+    {"profile": "standard", "escalations": [{"paths": ["a"], "profile": "strict", "x": 1}]}
+  ]
+}

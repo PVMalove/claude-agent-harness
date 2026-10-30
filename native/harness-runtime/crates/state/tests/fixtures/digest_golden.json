@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "name": "transition",
+      "value": {"batch_id": "batch-1", "previous_dispatch_id": null, "review_scope": [], "required_gates": ["review", "qa"], "verification_commands": ["cargo test"], "nested": {"z": 1, "a": {}}, "purpose": "work"},
+      "compact": "{\"batch_id\":\"batch-1\",\"nested\":{\"a\":{},\"z\":1},\"previous_dispatch_id\":null,\"purpose\":\"work\",\"required_gates\":[\"review\",\"qa\"],\"review_scope\":[],\"verification_commands\":[\"cargo test\"]}",
+      "compact_sha256": "2e4c0641d8e889fff0ebfef42363146a4e5b6d050dd1266da34f143042fe54f4",
+      "sort_key": "{\"batch_id\": \"batch-1\", \"nested\": {\"a\": {}, \"z\": 1}, \"previous_dispatch_id\": null, \"purpose\": \"work\", \"required_gates\": [\"review\", \"qa\"], \"review_scope\": [], \"verification_commands\": [\"cargo test\"]}"
+    },
+    {
+      "name": "non-ascii-and-astral",
+      "value": {"путь": "файл 😀", "ｚ": ["é", "😀", "ｚ"], "a": "ascii"},
+      "compact": "{\"a\":\"ascii\",\"путь\":\"файл 😀\",\"ｚ\":[\"é\",\"😀\",\"ｚ\"]}",
+      "compact_sha256": "4379e1e237d22a34df661e289eaeb8145dea2bf29bc65da2c6589cba51958cce",
+      "sort_key": "{\"a\": \"ascii\", \"\\u043f\\u0443\\u0442\\u044c\": \"\\u0444\\u0430\\u0439\\u043b \\ud83d\\ude00\", \"\\uff5a\": [\"\\u00e9\", \"\\ud83d\\ude00\", \"\\uff5a\"]}"
+    },
+    {
+      "name": "quote-backslash-and-controls",
+      "value": {"q": "say \"hi\"", "b": "C:\\dir\\file", "ctl": "a\nb\tc\u0001\u007f\b\f\r"},
+      "compact": "{\"b\":\"C:\\\\dir\\\\file\",\"ctl\":\"a\\nb\\tc\\u0001\u007f\\b\\f\\r\",\"q\":\"say \\\"hi\\\"\"}",
+      "compact_sha256": "bdb3efd129890502df1fc156e079e6d502be6dec3bce540eac835b97d98a746d",
+      "sort_key": "{\"b\": \"C:\\\\dir\\\\file\", \"ctl\": \"a\\nb\\tc\\u0001\\u007f\\b\\f\\r\", \"q\": \"say \\\"hi\\\"\"}"
+    },
+    {
+      "name": "scalars",
+      "value": {"n": [0, -7, 123456789012345678901234567890, 1.5], "t": true, "f": false, "none": null},
+      "compact": "{\"f\":false,\"n\":[0,-7,123456789012345678901234567890,1.5],\"none\":null,\"t\":true}",
+      "compact_sha256": "fa660a007be28fda2c381ced00e275ebba07c2e103306b1ccf9fa998887f7eb7",
+      "sort_key": "{\"f\": false, \"n\": [0, -7, 123456789012345678901234567890, 1.5], \"none\": null, \"t\": true}"
+    },
+    {
+      "name": "top-level-list",
+      "value": ["x", {"b": 1, "a": 2}, [], {}],
+      "compact": "[\"x\",{\"a\":2,\"b\":1},[],{}]",
+      "compact_sha256": "a03be1bdaded302c1961d678285f2dca247e865445db6951c108667f5ab4a71e",
+      "sort_key": "[\"x\", {\"a\": 2, \"b\": 1}, [], {}]"
+    }
+  ]
+}

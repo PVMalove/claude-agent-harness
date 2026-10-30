@@ -46,6 +46,35 @@ def test_the_golden_fixture_covers_the_cases_the_two_writers_could_differ_on() -
     assert "1E-5" in source
 
 
+def _digest_cases() -> list[dict[str, object]]:
+    golden = json.loads((FIXTURES / "digest_golden.json").read_text(encoding="utf-8"))
+    cases: list[dict[str, object]] = golden["cases"]
+    return cases
+
+
+def test_python_digests_equal_the_shared_golden_vectors() -> None:
+    """``state::canonical`` hashes approval facts in the compact form of
+    ``operational_guards._digest`` and sorts escalations by the default ``json.dumps`` text; the
+    Rust test ``crates/state/tests/digest_golden.rs`` checks the same vectors."""
+    for case in _digest_cases():
+        value = case["value"]
+
+        compact = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        assert compact == case["compact"], case["name"]
+        assert operational_guards._digest(value) == case["compact_sha256"], case["name"]
+        assert json.dumps(value, sort_keys=True) == case["sort_key"], case["name"]
+
+
+def test_the_digest_vectors_cover_the_cases_the_two_writers_could_differ_on() -> None:
+    sort_keys = "".join(str(case["sort_key"]) for case in _digest_cases())
+    compact = "".join(str(case["compact"]) for case in _digest_cases())
+
+    for needle in ("\\ud83d\\ude00", "\\u00e9", "\\u007f", '\\"', "\\\\"):
+        assert needle in sort_keys
+    for needle in ("😀", "é", "\x7f", '\\"', "\\\\"):
+        assert needle in compact
+
+
 def test_the_rust_state_vocabularies_equal_the_python_vocabularies() -> None:
     """The store validates batch and dispatch states against lists of its own."""
     rust = (STATE_CRATE / "src/vocabulary.rs").read_text(encoding="utf-8")

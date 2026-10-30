@@ -38,11 +38,11 @@ use state::canonical::{canonical_json, object_sha256, sha256_hex};
 use state::executions::{self, Change, Execution, KIND_QA, NewExecution, is_terminal};
 use state::time::{iso_from_micros, iso_now, now_micros};
 
-use crate::Supervisor;
 use crate::container::{Checked, host_user, protected_inputs};
 use crate::launch::{
     acquire, guard, injected, log_directory, owner, replay, sql, store_busy, stored_operation,
 };
+use crate::{Supervisor, hook_policy};
 
 /// How often the runner looks at a command and at the stop of the run.
 const RUNNER_POLL: Duration = Duration::from_millis(100);
@@ -406,6 +406,7 @@ impl Supervisor {
             )
             .with_fact("expected_operation_id", expected));
         }
+        hook_policy::verify(&brief)?;
         let lane = sql(state::lease::load(connection))?;
         let held = lane.as_ref().and_then(|lane| {
             let held = lane.held.as_ref()?;
