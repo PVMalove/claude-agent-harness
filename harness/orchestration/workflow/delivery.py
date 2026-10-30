@@ -1125,6 +1125,11 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             raise
         candidate = dispatch["candidate_commit"]
         accepted_qa = _accepted_qa_for_candidate(root, batch, candidate)
+        # The Release Gate (ADR 0026, section 4): in the runtime-store epoch nothing is pushed
+        # unless the runtime confirms a full QA run of exactly the pair this push publishes.
+        release_gate.require_evidence(
+            repo, root, release_gate.publish_pair(batch, dispatch)
+        )
         # Strict fails closed before the push: the plan is the one the accepted QA brief carried.
         hook_policy.check_strict_boundary(
             repo,

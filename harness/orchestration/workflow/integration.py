@@ -36,6 +36,7 @@ from harness.orchestration.core.constants import (
     EvidenceVerification,
     IntegrationCheckResult,
     IntegrationTargetState,
+    ReleaseGateRefusal,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -1144,12 +1145,24 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
     (a resolver batch is open: wait, no cycle is spent), ``refresh``, ``route-failure`` /
     ``human-decision`` (a failed check of the current pair), ``confirm-pr`` (before a pull
     request exists), ``verify`` (a refreshed pair of an opened pull request still needs CI or
-    local QA) and ``handoff`` (the pair is current and verified: the facts for a manual merge)."""
+    local QA) and ``handoff`` (the pair is current and verified: the facts for a manual merge).
+
+    The Release Gate (ADR 0026, section 4) refuses the handoff as ``release-gate-refused`` when the
+    remote issue branch is not the candidate, the target is not in its history, or -- in the
+    runtime-store epoch -- ``qa_evidence_verify`` does not answer ``ok``. After a merge,
+    ``--merge-commit`` compares the tree of the commit the merge created with the pair's
+    ``candidate_tree_sha``: ``merged`` or ``merge-tree-mismatch``."""
     from harness.orchestration.workflow import resolver
 
     repo = _repo(args)
     root = _state_root(args, repo)
     number = _pull_request_number(args)
+    merge_commit = _text(args, "merge_commit")
+    if merge_commit and number is None:
+        raise CoordinatorError(
+            "--merge-commit checks the merge of a pull request",
+            remedy="pass --pull-request with the number of the merged pull request",
+        )
     status = integration_status(args)
     record_id = status["integration_record_id"]
     refreshed = bool(status["refreshes"])
@@ -1162,7 +1175,12 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
         "integration_tip": status["integration_tip"],
         "state": status["state"],
         "refreshed": refreshed,
+        "candidate_tree_sha": status["candidate_tree_sha"],
     }
+    if merge_commit:
+        # After the merge the integration ref points to the merge commit: the pair is stale by
+        # construction, so only the tree decides.
+        return {**result, **_merged(repo, root, record_id, status, merge_commit)}
     if status["state"] == IntegrationTargetState.UNAVAILABLE:
         return {
             **result,
@@ -1174,6 +1192,7 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(LifecycleLedger(root)):
         open_batch = resolver.open_resolver_batch(root, record_id)
         links = _evidence_links(root, record_id)
+        identity = _load_record(root, record_id)["identity"]
     if open_batch is not None:
         return {
             **result,
@@ -1223,6 +1242,30 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
                 "--reason <reason>; then repeat 'integration next'",
             ],
         }
+    pair = {
+        "candidate_sha": status["candidate_sha"],
+        "target_sha": status["target_sha"],
+    }
+    if status["candidate_tree_sha"] is None:
+        raise CoordinatorError(
+            "the Release Gate pair of the current candidate is not recorded",
+            remedy=_PAIR_REMEDY,
+        )
+    refusals, verdict = release_gate.handoff_gate(
+        repo, root, identity["remote"], identity["branch"], pair
+    )
+    if refusals:
+        return {
+            **result,
+            "step": "release-gate-refused",
+            "refusals": refusals,
+            "qa_evidence": verdict,
+            "next": [
+                "no merge: the Release Gate refuses this pair; a moved issue branch needs the "
+                "accepted candidate published again, and refused QA evidence a new full QA of "
+                "exactly this pair"
+            ],
+        }
     source, reference = _verified_source(status)
     return {
         **result,
@@ -1230,9 +1273,56 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
         "handoff": {
             "candidate_sha": status["candidate_sha"],
             "target_sha": status["target_sha"],
+            "candidate_tree_sha": status["candidate_tree_sha"],
             "qa_source": source,
             "reference": reference,
             "refreshed": refreshed,
+            "qa_evidence": None if verdict is None else verdict["confirmed_by"],
         },
-        "next": ["repeat 'integration next' just before a manual merge"],
+        "next": [
+            "repeat 'integration next' just before a manual merge; after it, check the tree with "
+            "'integration next --pull-request <number> --merge-commit <sha>'"
+        ],
+    }
+
+
+_PAIR_REMEDY = (
+    "repeat 'integration prepare' with the ticket and branch: it records the pair of a prepared "
+    "record; a refreshed pair is recorded by its refresh"
+)
+
+
+def _merged(
+    repo: Path, root: Path, record_id: str, status: JsonObject, merge_commit: str
+) -> JsonObject:
+    """Compare the tree of the commit a merge created with the ``candidate_tree_sha`` of the
+    current pair; read-only, like the rest of ``integration next``."""
+    with _ledger_lock(LifecycleLedger(root)):
+        identity = _load_record(root, record_id)["identity"]
+    expected = status["candidate_tree_sha"]
+    if expected is None:
+        raise CoordinatorError(
+            "the Release Gate pair of the merged candidate is not recorded",
+            remedy=_PAIR_REMEDY,
+        )
+    tree = release_gate.merged_tree(
+        repo, identity["remote"], identity["integration_ref"], merge_commit
+    )
+    checked = {"merge_commit": merge_commit, "merged_tree_sha": tree}
+    if tree == expected:
+        return {
+            **checked,
+            "step": "merged",
+            "next": [
+                "the merged tree is the candidate tree; close the ticket as usual"
+            ],
+        }
+    return {
+        **checked,
+        "step": "merge-tree-mismatch",
+        "refusals": [ReleaseGateRefusal.MERGED_TREE_MISMATCH],
+        "next": [
+            f"blocker: the tree of {merge_commit} is not the candidate tree that QA checked; "
+            f"the next merge from {identity['integration_ref']} needs a new full QA of its head"
+        ],
     }

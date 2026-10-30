@@ -147,6 +147,14 @@ class StepTests(NextFixture):
         self.assertEqual(handoff["qa_source"], "original-qa")
         self.assertEqual(handoff["candidate_sha"], self.published["candidate"])
         self.assertEqual(handoff["target_sha"], self.prepared["target_sha"])
+        self.assertEqual(
+            handoff["candidate_tree_sha"],
+            _git(
+                self.branch.repo, "rev-parse", f"{self.published['candidate']}^{{tree}}"
+            ),
+        )
+        # The file-ledger epoch has no runtime verdict and no stand-in for one (ADR 0020).
+        self.assertIsNone(handoff["qa_evidence"])
         self.assertFalse(handoff["refreshed"])
         self.assertEqual(
             handoff["reference"]["dispatch_id"],

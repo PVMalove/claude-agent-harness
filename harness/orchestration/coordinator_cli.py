@@ -919,6 +919,11 @@ def build_parser(
         type=int,
         help="the opened pull request; without it the step is the one before the pull request",
     )
+    integration_next.add_argument(
+        "--merge-commit",
+        help="after the merge of --pull-request: the commit the merge created; its tree is "
+        "compared with the candidate_tree_sha of the pair (merged or merge-tree-mismatch)",
+    )
     integration_next.set_defaults(handler=handlers.integration_next)
     integration_link = integration_commands.add_parser(
         "link-evidence",
