@@ -276,6 +276,76 @@ fn an_exit_the_store_refuses_for_good_leaves_the_execution_unknown_with_the_leas
     );
 }
 
+/// Whether the process that started at `start_time` still holds `pid`, a zombie included.
+fn holds(pid: i64, start_time: &str) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|line| supervisor::process::parse_stat(&line))
+        .is_some_and(|(_, _, started)| started == start_time)
+}
+
+#[test]
+fn a_stopping_record_refused_for_good_leaves_the_execution_unknown_and_reaps_the_child() {
+    let mut repo = Repo::new("stopping-refused", "sleep 30", 1, 10);
+    let supervisor = Arc::new(Supervisor::new(Some(repo.state())));
+
+    let receipt = repo.launch(&supervisor);
+    let pid = receipt["identity"]["pid"].as_i64().unwrap();
+    let start_time = receipt["identity"]["start_time"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The store refuses the stop for good, after the SIGTERM went out.
+    repo.store()
+        .execute_batch(
+            "CREATE TRIGGER refuse_stopping BEFORE UPDATE OF state ON executions
+             WHEN NEW.state = 'stopping' BEGIN SELECT RAISE(ABORT, 'the stop is refused'); END;",
+        )
+        .unwrap();
+
+    let unknown = repo.wait_for(ExecutionState::Unknown, 10);
+    assert_eq!(unknown.lease_released_at, None);
+    let details: String = repo
+        .store()
+        .query_row(
+            "SELECT details_json FROM audit WHERE action = 'execution-unknown'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let details: Value = serde_json::from_str(&details).unwrap();
+    assert_eq!(details["facts"]["unrecorded"], "stopping");
+    // The runtime reaps its own child: no zombie of the leader is left.
+    let until = Instant::now() + Duration::from_secs(10);
+    while holds(pid, &start_time) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !holds(pid, &start_time),
+        "the leader {pid} was never reaped"
+    );
+    let until = Instant::now() + Duration::from_secs(20);
+    let lost = loop {
+        supervisor.reconcile_all();
+        let execution = repo.execution();
+        if execution.state == ExecutionState::Lost || Instant::now() > until {
+            break execution;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(lost.state, ExecutionState::Lost, "{lost:?}");
+    assert!(lost.lease_released_at.is_some());
+    assert_eq!(
+        audit_actions(&repo),
+        [
+            "execution-launching",
+            "execution-running",
+            "execution-unknown",
+            "execution-lost"
+        ]
+    );
+}
+
 #[test]
 fn a_group_that_outlives_its_leader_keeps_the_lease_until_the_deadline_stops_it() {
     let mut repo = Repo::new("outlived", "sleep 30 & exit 3", 2, 1);

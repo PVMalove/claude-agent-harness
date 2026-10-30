@@ -13,6 +13,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, ExitStatus};
+use std::thread;
 
 use contracts::ExecutionState;
 use nix::errno::Errno;
@@ -118,6 +119,17 @@ pub(crate) fn observe(
 /// After a stop recorded the row of `id` `exited`: nothing to close here, because this runtime
 /// holds no handle to a leader it adopted.
 pub(crate) fn release_leader(_supervisor: &Supervisor, _id: &str) {}
+
+/// Take a child that a watcher gives up without the proof of its exit: a thread of its own waits
+/// for a child that has not been reaped yet, so it never stays a zombie. That wait status proves
+/// nothing; reconcile observes the execution from its identity.
+pub(crate) fn reap(mut launched: Launched) {
+    if matches!(launched.try_wait(), Ok(None)) {
+        thread::spawn(move || {
+            let _ = launched.wait();
+        });
+    }
+}
 
 /// The exit a stop or a watcher proves: the wait status of a child of this runtime.
 pub(crate) struct Exit(ExitStatus);
