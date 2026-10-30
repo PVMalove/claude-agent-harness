@@ -104,6 +104,12 @@ BLOCKED = [
     pytest.param(SCRIPT + "bash *.sh", id="written-script-by-glob"),
     pytest.param(SCRIPT + "sh m.s?", id="written-script-by-pattern"),
     pytest.param(SCRIPT + "bash {m,n}.sh", id="written-script-by-brace"),
+    # On a case-insensitive file system (Windows, macOS) M.SH and m.sh are one file.
+    pytest.param(
+        "cd /repo && cat > M.SH <<'EOF'\n" + MERGE + "\nEOF\nbash m.sh",
+        id="written-script-run-in-another-case",
+    ),
+    pytest.param(SCRIPT + "bash *.SH", id="written-script-by-glob-in-another-case"),
     pytest.param(
         "cd /repo && cat <<'EOF' > f | bash\n" + MERGE + "\nEOF",
         id="writer-in-a-pipeline",
@@ -149,6 +155,14 @@ BLOCKED = [
     pytest.param(
         "cd /dev && cat > stdin <<'EOF'\n" + MERGE + "\nEOF",
         id="writer-to-a-relative-standard-stream",
+    ),
+    pytest.param(
+        "cd /repo && cat > /DEV/tty <<'EOF'\n" + MERGE + "\nEOF",
+        id="writer-to-a-device-in-another-case",
+    ),
+    pytest.param(
+        "cd /dev && cat > Stdin <<'EOF'\n" + MERGE + "\nEOF",
+        id="writer-to-a-standard-stream-in-another-case",
     ),
     pytest.param(
         "cd /repo && cat > f <<'EOF'\n" + MERGE + "\nEOF\ngh pr mer''ge 1",
