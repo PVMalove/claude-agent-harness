@@ -147,16 +147,30 @@ impl Repo {
         })
     }
 
-    /// Wait until the execution is in `state`, and return it.
+    /// Wait up to `seconds` until the execution is in `state`, and return it.
     fn wait_for(&self, state: ExecutionState, seconds: u64) -> Execution {
         let until = Instant::now() + Duration::from_secs(seconds);
         loop {
             let execution = self.execution().unwrap();
-            if execution.state == state || Instant::now() > until {
-                assert_eq!(execution.state, state, "{execution:?}");
+            if execution.state == state {
                 return execution;
             }
+            assert!(
+                Instant::now() <= until,
+                "the execution is not {state:?} within {seconds} s; execution: {execution:?}; job members: {}; leader stdout: {:?}",
+                self.members(),
+                self.stdout(&execution.id)
+            );
             std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The pids of the members of the job of the execution, for the message of a wait in vain.
+    fn members(&self) -> String {
+        match Job::open(&job::name(&self.operation_id()), JobAccess::Query) {
+            Ok(Some(job)) => format!("{:?}", job.processes()),
+            Ok(None) => "no job object".to_owned(),
+            Err(err) => format!("the job object cannot be opened: {err}"),
         }
     }
 
@@ -211,7 +225,13 @@ fn a_launch_runs_the_leader_with_its_labels_in_the_job_of_its_operation_id() {
     while !repo.stdout(&operation_id).contains(&operation_id) && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(repo.stdout(&operation_id).contains(&operation_id));
+    assert!(
+        repo.stdout(&operation_id).contains(&operation_id),
+        "the leader printed no label within 20 s; stdout: {:?}; job members: {}; execution: {:?}",
+        repo.stdout(&operation_id),
+        repo.members(),
+        repo.execution()
+    );
     // A repeat answers the stored receipt and starts nothing.
     assert_eq!(repo.launch(&supervisor).unwrap(), receipt);
     assert_eq!(job.active_processes().unwrap(), 1);
