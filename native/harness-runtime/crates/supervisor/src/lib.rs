@@ -38,6 +38,7 @@
 
 #[cfg(target_os = "linux")]
 mod container;
+pub mod hook_policy;
 pub mod job;
 #[cfg(any(target_os = "linux", windows))]
 mod launch;
