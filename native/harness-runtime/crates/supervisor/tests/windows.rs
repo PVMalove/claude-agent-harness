@@ -2,11 +2,13 @@
 //! the job object derived from its operation id, the receipt records its pid, creation time and
 //! job, its exit is recorded with the exit code of the held handle, a launch the OS refuses
 //! leaves no process and no job, a job name that exists is never taken over, and a container
-//! brief is refused before the intent (ADR 0022, sections 2 and 3). The executions are Python
-//! scripts of the `python` on PATH. Runs in the Windows CI job only.
+//! brief is refused before the intent (ADR 0022, sections 2 and 3). The job of a launch holds the
+//! leader and the console host of its hidden console; the test prints them as `JOB-MEMBERS`. The
+//! executions are Python scripts of the `python` on PATH. Runs in the Windows CI job only.
 #![cfg(windows)]
 
 mod common;
+mod windows_job;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +22,7 @@ use serde_json::{Value, json};
 use state::canonical::{canonical_json, object_sha256, sha256_hex};
 use state::executions::{self, Execution};
 use supervisor::{Supervisor, job};
+use windows_job::Expected;
 
 const DISPATCH: &str = "dispatch-11111111-0000-4000-8000-000000000001";
 const FIXTURE: &str = concat!(
@@ -232,9 +235,33 @@ fn a_launch_runs_the_leader_with_its_labels_in_the_job_of_its_operation_id() {
         repo.members(),
         repo.execution()
     );
+    // The job holds the leader and the console host of its hidden console, and nothing else.
+    let leader_pid = leader.pid();
+    let before = windows_job::wait_for(
+        &job,
+        "launch",
+        &[
+            Expected::python("leader", leader_pid),
+            Expected::console_host_of(leader_pid),
+        ],
+        20,
+    );
     // A repeat answers the stored receipt and starts nothing.
     assert_eq!(repo.launch(&supervisor).unwrap(), receipt);
-    assert_eq!(job.active_processes().unwrap(), 1);
+    let after = windows_job::members(&job);
+    windows_job::print("launch repeated", &after);
+    assert_eq!(
+        windows_job::pids(&after),
+        windows_job::pids(&before),
+        "{}",
+        windows_job::text(&after)
+    );
+    assert_eq!(
+        usize::try_from(job.active_processes().unwrap()).unwrap(),
+        after.len(),
+        "{}",
+        windows_job::text(&after)
+    );
 }
 
 #[test]

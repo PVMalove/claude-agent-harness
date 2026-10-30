@@ -1,12 +1,16 @@
 //! Job objects and process handles against the real operating system: a job without limits and
 //! with an owner-only DACL, a name that is never taken over, a name that lives with the member's
 //! copy of the handle and ends with the last handle, a suspended child that runs only after
-//! resume, descendants that stay in the job until `TerminateJobObject`, a held handle that
+//! resume, descendants that stay in the job with the console host of the hidden console of their
+//! leader until `TerminateJobObject` (printed as `JOB-MEMBERS`), a held handle that
 //! keeps the creation time and the exit code, 259 included, the executable image and the creator
 //! of a process, the system directory with the console host, and a job opened to assign that
 //! takes a process. The children are Python scripts of the `python` on PATH. Runs in the Windows
 //! CI job only.
 #![cfg(windows)]
+
+#[path = "../../supervisor/tests/windows_job/mod.rs"]
+mod windows_job;
 
 use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
@@ -19,6 +23,7 @@ use platform_ffi::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, Job, JobAccess, Process,
     current_user_sid, parent_pids, process_creation_time, system_directory,
 };
+use windows_job::Expected;
 
 const SLEEPER: &str = "import time\nwhile True: time.sleep(0.1)";
 
@@ -190,15 +195,24 @@ fn descendants_stay_in_the_job_until_terminate_job_object_and_an_outsider_is_unt
     job.assign(&leader).unwrap();
     leader.resume().unwrap();
 
-    assert!(
-        eventually(20, || job.processes().unwrap().len() == 2),
-        "{:?}",
-        job.processes()
+    // The leader, its descendant and the console host of the hidden console of the leader.
+    let members = windows_job::wait_for(
+        &job,
+        "descendants",
+        &[
+            Expected::python("leader", leader.pid()),
+            Expected::python_child_of("descendant", leader.pid()),
+            Expected::console_host_of(leader.pid()),
+        ],
+        20,
     );
-    assert_eq!(job.active_processes().unwrap(), 2);
-    for pid in job.processes().unwrap() {
-        let member = Process::open(pid).unwrap().unwrap();
-        assert!(job.contains(&member).unwrap(), "{pid}");
+    assert_eq!(
+        usize::try_from(job.active_processes().unwrap()).unwrap(),
+        members.len()
+    );
+    for member in &members {
+        let process = Process::open(member.pid).unwrap().unwrap();
+        assert!(job.contains(&process).unwrap(), "{member:?}");
     }
     assert!(!job.contains(&outsider).unwrap());
 

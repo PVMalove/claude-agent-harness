@@ -19,6 +19,8 @@
 
 #[path = "../../supervisor/tests/common/mod.rs"]
 mod common;
+#[path = "../../supervisor/tests/windows_job/mod.rs"]
+mod windows_job;
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
@@ -36,6 +38,7 @@ use serde_json::{Value, json};
 use state::canonical::{canonical_json, object_sha256, sha256_hex};
 use state::executions::{self, Execution};
 use supervisor::{Supervisor, job};
+use windows_job::Expected;
 
 const HELPER: &str = env!("CARGO_BIN_EXE_harness-runtime");
 const RUNTIME_STATE: &str = "HR_TEST_WINDOWS_RUNTIME_STATE";
@@ -227,6 +230,27 @@ impl Repo {
                 self.seen(&execution)
             );
             std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// The pid a leader printed as the first line of its stdout, waited for up to `seconds`.
+    fn printed_pid(&self, seconds: u64) -> u32 {
+        let until = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let execution = self.execution();
+            let printed = execution.launch["logs"]["stdout"]
+                .as_str()
+                .and_then(|path| fs::read_to_string(path).ok())
+                .and_then(|text| text.lines().next()?.trim().parse().ok());
+            if let Some(pid) = printed {
+                return pid;
+            }
+            assert!(
+                Instant::now() <= until,
+                "the leader printed no pid within {seconds} s; {}",
+                self.seen(&execution)
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -508,16 +532,16 @@ fn a_runtime_killed_after_the_spawn_is_followed_by_the_adoption_of_the_earliest_
     let job = Job::open(&repo.job_name(), JobAccess::Query)
         .unwrap()
         .unwrap();
-    let until = Instant::now() + Duration::from_secs(20);
-    while job.processes().unwrap().len() < 2 && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert_eq!(
-        job.processes().unwrap().len(),
-        2,
-        "members {:?}; {}",
-        job.processes(),
-        repo.seen(&repo.execution())
+    let leader = repo.printed_pid(20);
+    let before = windows_job::wait_for(
+        &job,
+        "adopt before the restart",
+        &[
+            Expected::python("leader", leader),
+            Expected::python_child_of("child of the leader", leader),
+            Expected::console_host_of(leader),
+        ],
+        20,
     );
 
     runtime.kill();
@@ -525,25 +549,25 @@ fn a_runtime_killed_after_the_spawn_is_followed_by_the_adoption_of_the_earliest_
     let supervisor = supervisor_of(repo.state());
     supervisor.reconcile_all();
     let running = repo.execution();
-    assert_eq!(running.state, ExecutionState::Running, "{running:?}");
+    assert_eq!(
+        running.state,
+        ExecutionState::Running,
+        "{}",
+        repo.seen(&running)
+    );
     let receipt = running.receipt.unwrap();
     assert_eq!(receipt["adopted"], true);
     assert_eq!(receipt["accounting"], "job-object");
-    let stdout = running.launch["logs"]["stdout"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let printed: i64 = fs::read_to_string(stdout)
-        .unwrap()
-        .lines()
-        .next()
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert_eq!(receipt["identity"]["pid"], printed);
-    // The adoption launched nothing: the leader and its child are the only members.
-    assert_eq!(job.active_processes().unwrap(), 2);
+    assert_eq!(receipt["identity"]["pid"], leader, "{receipt}");
+    // The adoption launched nothing: the members are the ones before the restart.
+    let after = windows_job::members(&job);
+    windows_job::print("adopt after the restart", &after);
+    assert_eq!(
+        windows_job::pids(&after),
+        windows_job::pids(&before),
+        "{}",
+        windows_job::text(&after)
+    );
 }
 
 #[test]
