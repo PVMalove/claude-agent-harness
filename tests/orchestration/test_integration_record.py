@@ -405,6 +405,10 @@ class IntegrationPrepareTests(unittest.TestCase):
         self.assertEqual(result["published_sha"], published["candidate"])
         self.assertEqual(result["target_sha"], target)
         self.assertEqual(result["integration_ref"], "master")
+        self.assertEqual(
+            result["candidate_tree_sha"],
+            _git(self.branch.repo, "rev-parse", f"{published['candidate']}^{{tree}}"),
+        )
         self.assertEqual(result["status"]["state"], "current")
         self.assertEqual(result["evidence_links"], [])
         source = result["source_evidence"]
@@ -1074,6 +1078,9 @@ class IntegrationGuidanceTests(unittest.TestCase):
             "integration status",
             "integration link-evidence",
             "integration next",
+            "reports/integration-pair",
+            "qa.evidence.verify",
+            "--merge-commit",
         ),
         "harness/orchestration/README.md": (
             "integration prepare",
@@ -1088,6 +1095,10 @@ class IntegrationGuidanceTests(unittest.TestCase):
             "candidate_sha",
             "target_sha",
             "qa_source",
+            "release-gate-refused",
+            "--merge-commit",
+            "candidate_tree_sha",
+            "merge-tree-mismatch",
         ),
         "docs/skills/implement.md": ("integration prepare",),
         "docs/skills/to-pull-requests.md": (
@@ -1096,6 +1107,10 @@ class IntegrationGuidanceTests(unittest.TestCase):
             "integration collect-ci",
             "integration local-qa",
             "qa_source",
+            "release-gate-refused",
+            "--merge-commit",
+            "candidate_tree_sha",
+            "merge-tree-mismatch",
         ),
         "docs/adr/0017-pr-continuation-routing.md": (
             "integration next",

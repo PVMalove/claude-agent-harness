@@ -15,7 +15,7 @@ pub struct ProtocolVersion {
 }
 
 /// The version this build speaks.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 5 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 6 };
 
 /// The versions a client accepts: from `min` to `max`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

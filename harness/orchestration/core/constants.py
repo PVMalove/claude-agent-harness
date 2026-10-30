@@ -63,6 +63,32 @@ class EvidenceVerification(StrEnum):
     UNVERIFIED = "unverified"
 
 
+# The verdict of the runtime operation qa.evidence.verify on a Release Gate pair (ADR 0021,
+# section 7: qa_evidence_verify) and the violations it names (ADR 0023, section 5).
+class QaEvidenceVerdict(StrEnum):
+    OK = "ok"
+    REFUSED = "refused"
+
+
+class QaEvidenceViolation(StrEnum):
+    PAIR_NOT_RECORDED = "pair_not_recorded"
+    NO_FULL_QA = "no_full_qa"
+    SELECTION_NOT_FULL = "selection_not_full"
+    STAGE_NOT_PASSED = "stage_not_passed"
+    STAGE_CANDIDATE_MISMATCH = "stage_candidate_mismatch"
+    PLAN_MISMATCH = "plan_mismatch"
+    EVIDENCE_UNVERIFIABLE = "evidence_unverifiable"
+    CI_NOT_COLLECTED = "ci_not_collected"
+
+
+# Why the Python Release Gate refuses a merge handoff or blocks after a merge (ADR 0026, section 4).
+class ReleaseGateRefusal(StrEnum):
+    BRANCH_HEAD_MISMATCH = "branch_head_mismatch"
+    TARGET_NOT_IN_CANDIDATE_HISTORY = "target_not_in_candidate_history"
+    EVIDENCE_REFUSED = "evidence_refused"
+    MERGED_TREE_MISMATCH = "merged_tree_mismatch"
+
+
 # A code-review report's optional overall recommendation (review.recommendation).
 class ReviewRecommendation(StrEnum):
     ACCEPT = "accept"

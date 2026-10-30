@@ -19,6 +19,7 @@ pub mod parity;
 pub mod platform;
 pub mod policy;
 pub mod project;
+pub mod qa_evidence;
 pub mod read;
 pub mod read_session;
 pub mod repair;

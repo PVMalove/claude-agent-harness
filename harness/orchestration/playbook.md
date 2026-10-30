@@ -1593,10 +1593,27 @@ dispatch or report, or changes Git:
   pair, verifies the opened PR with CI or the local-QA fallback, and hands over the verified pair
   and QA source for a manual merge; it never merges, and a newly detected target repeats
   actualization and verification.
+- The Release Gate (ADR 0026, section 4) binds push and merge to the pair QA checked and to the tree
+  of its candidate. `dispatch publish`, `integration prepare` and `integration refresh` (and an
+  accepted resolution) record the immutable pair `reports/integration-pair/<pair_id>.json` with
+  `candidate_tree_sha` (`git rev-parse <candidate>^{tree}`); `integration next` stays read-only
+  and only reads it. Python checks the Git facts: before the `handoff`, the remote issue branch is
+  the candidate and the target is in its history, otherwise the step is `release-gate-refused`
+  with its `refusals`. In the runtime-store epoch the read-only runtime operation
+  `qa.evidence.verify` (`qa_evidence_verify` of ADR 0021, section 7) also judges the stored QA
+  evidence of exactly the pair: only an accepted full QA run with its log, stage evidence and output
+  streams, a verified local-QA run or a CI check `integration collect-ci` accepted confirms it;
+  focused, failed-only and cached results never do. Without its `ok` `dispatch publish` pushes
+  nothing and `integration next` hands nothing over, and an unavailable runtime refuses both; the
+  file-ledger epoch asks no runtime verdict. Only the push of `dispatch publish` is gated: a
+  refresh pushes before CI or local QA of the new pair, and its merge still needs the `handoff`.
+  After the merge, `integration next --pull-request N --merge-commit <sha>` compares the tree of
+  the merge commit with `candidate_tree_sha`: `merged`, or `merge-tree-mismatch`, a blocker after
+  which the next merge from the target branch needs a new full QA of its head.
 
-Records live under `reports/integration/`, `reports/integration-evidence/`, `reports/resolver/` and
-`reports/resolver-events/` in the existing `reports` directory, so no ledger schema change or
-migration is involved.
+Records live under `reports/integration/`, `reports/integration-evidence/`,
+`reports/integration-pair/`, `reports/resolver/` and `reports/resolver-events/` in the existing
+`reports` directory, so no ledger schema change or migration is involved.
 
 ## Baseline metrics
 

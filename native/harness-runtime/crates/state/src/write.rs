@@ -36,6 +36,7 @@ use crate::error::Error;
 use crate::hooks;
 use crate::lease::{self, LeaseRequest};
 use crate::project::{BATCH, DISPATCH, DISPATCH_STATUS, PLAN, Spec};
+use crate::qa_evidence;
 use crate::read::valid_path;
 use crate::route::{Target, classify};
 use crate::schema;
@@ -449,11 +450,27 @@ fn plan(mutation: Mutation) -> Result<Planned, ErrorBody> {
     if matches!(&place, Place::Record(collection) if collection == RECOVERY) {
         check_recovery(&mutation, record.as_ref())?;
     }
+    if path.starts_with(&format!("{}/", qa_evidence::PAIR_DIRECTORY)) {
+        check_pair(&mutation, record.as_ref())?;
+    }
     Ok(Planned {
         mutation,
         place,
         record,
     })
+}
+
+/// Check a mutation of a Release Gate pair record (ADR 0026, section 4): only a create of an
+/// object with the exact fields, ids and `pair_id` of its pair; it is evidence, never replaced.
+fn check_pair(mutation: &Mutation, record: Option<&Map<String, Value>>) -> Result<(), ErrorBody> {
+    let path = &mutation.path;
+    let Some(record) = record.filter(|_| mutation.op == Op::Create) else {
+        return Err(invariant(format!(
+            "{path} is a Release Gate pair record: it is created once as a record and never \
+             replaced or deleted"
+        )));
+    };
+    qa_evidence::check_pair_record(path, record).map_err(invariant)
 }
 
 /// The batch the recovery record at `path` belongs to, when `path` is one of the two recovery

@@ -275,8 +275,9 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         sys.exit("installed to-pull-requests step does not record accepted QA evidence")
     # Issue #537: the installed PR step carries the whole continuation (next step, separate
-    # confirmation bound to the SHA pair, CI wait, local-QA fallback, merge handoff) and still keeps
-    # the plain /qa-gate branch for a project without the optional orchestration.
+    # confirmation bound to the SHA pair, CI wait, local-QA fallback, merge handoff, the Release Gate
+    # tree check after the merge) and still keeps the plain /qa-gate branch for a project without the
+    # optional orchestration.
     for required_pr_phrase in (
         "integration next",
         "integration collect-ci",
@@ -285,6 +286,9 @@ def run(ctx: SimpleNamespace) -> None:
         "qa_source",
         "Never merge it",
         "/qa-gate",
+        "--merge-commit",
+        "candidate_tree_sha",
+        "merge-tree-mismatch",
     ):
         if required_pr_phrase not in installed_pr_text:
             sys.exit(

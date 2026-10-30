@@ -3,7 +3,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use contracts::{ErrorCode, ExecutionState, FailureDomain, OperationState};
+use contracts::{
+    ErrorCode, ExecutionState, FailureDomain, OperationState, QaEvidenceVerdict,
+    QaEvidenceViolation,
+};
 use serde_json::Value;
 
 fn registry_values(field: &str) -> BTreeSet<String> {
@@ -52,6 +55,28 @@ fn execution_states_match_the_registry() {
 }
 
 #[test]
+fn qa_evidence_verdicts_match_the_registry() {
+    let rust = rust_values(
+        QaEvidenceVerdict::ALL
+            .into_iter()
+            .map(QaEvidenceVerdict::as_str),
+    );
+
+    assert_eq!(rust, registry_values("qa_evidence.verdict"));
+}
+
+#[test]
+fn qa_evidence_violations_match_the_registry() {
+    let rust = rust_values(
+        QaEvidenceViolation::ALL
+            .into_iter()
+            .map(QaEvidenceViolation::as_str),
+    );
+
+    assert_eq!(rust, registry_values("qa_evidence.violation"));
+}
+
+#[test]
 fn json_spelling_equals_the_machine_value() {
     for state in OperationState::ALL {
         let json = serde_json::to_string(&state).expect("a state serializes");
@@ -68,5 +93,13 @@ fn json_spelling_equals_the_machine_value() {
     for domain in FailureDomain::ALL {
         let json = serde_json::to_string(&domain).expect("a domain serializes");
         assert_eq!(json, format!("\"{}\"", domain.as_str()));
+    }
+    for verdict in QaEvidenceVerdict::ALL {
+        let json = serde_json::to_string(&verdict).expect("a verdict serializes");
+        assert_eq!(json, format!("\"{}\"", verdict.as_str()));
+    }
+    for violation in QaEvidenceViolation::ALL {
+        let json = serde_json::to_string(&violation).expect("a violation serializes");
+        assert_eq!(json, format!("\"{}\"", violation.as_str()));
     }
 }

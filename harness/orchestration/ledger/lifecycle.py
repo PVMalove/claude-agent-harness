@@ -39,9 +39,7 @@ LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 # The version of ``ledger.json`` that says the runtime store is the authority (ADR 0020).
 STORE_LEDGER_VERSION = 4
-STORE_EPOCH_MESSAGE = (
-    "the runtime store is the authority of this state directory, so the file ledger is closed"
-)
+STORE_EPOCH_MESSAGE = "the runtime store is the authority of this state directory, so the file ledger is closed"
 STORE_EPOCH_REMEDY = (
     "run the command through the coordinator CLI with the runtime serving "
     "(`harness-runtime serve --repo <repo>`); the coordinator never writes the state files"
@@ -483,6 +481,37 @@ class IntegrationEvidenceRecord:
         known = ("evidence_id",)
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(evidence_id=cast(str, data.get("evidence_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class IntegrationPairRecord:
+    """Value Object for a ``reports/integration-pair/*.json`` record: the Release Gate pair
+    ``{candidate_sha, target_sha}`` with the tree of its candidate (ADR 0026, section 4).
+
+    The content is deterministic (no recording time) and the id derives from the pair, so writing
+    the pair again finds the same record; the runtime store checks its exact fields."""
+
+    directory: ClassVar[str] = "reports/integration-pair"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = ("candidate_sha", "target_sha")
+
+    pair_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("pair", {key: members.get(key) for key in cls.ID_MEMBERS})
+
+    @property
+    def record_id(self) -> str:
+        return self.pair_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "pair_id": self.pair_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationPairRecord:
+        extra = {key: value for key, value in data.items() if key != "pair_id"}
+        return cls(pair_id=cast(str, data.get("pair_id")), extra=extra)
 
 
 @dataclass(frozen=True)
@@ -1063,7 +1092,9 @@ class LifecycleLedger:
         if store_is_authority(self.root):
             # The runtime verifies the audit records after its checkpoint and counts them.
             store = self._validate_store(full=False)["store"]
-            audit_records = store.get("audit_records") if isinstance(store, dict) else None
+            audit_records = (
+                store.get("audit_records") if isinstance(store, dict) else None
+            )
             return {
                 "version": STORE_LEDGER_VERSION,
                 "generation": None,
@@ -1415,7 +1446,11 @@ class LifecycleLedger:
                 remedy=f"write the record at {path} before transitioning it",
             )
         before = _read(path, "current lifecycle record")
-        transition: JsonObject = {} if unit is not None else {"path": relative, "before_sha256": _digest(path)}
+        transition: JsonObject = (
+            {}
+            if unit is not None
+            else {"path": relative, "before_sha256": _digest(path)}
+        )
         if relative.startswith("batches/"):
             self._validate_batch_transition(generation, before, value)
             events = cast(list[JsonObject], value.get("recovery_events", []))

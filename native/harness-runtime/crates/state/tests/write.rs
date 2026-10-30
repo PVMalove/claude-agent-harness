@@ -1119,3 +1119,75 @@ fn a_recovery_record_belongs_to_its_batch_in_the_one_batch_rule() {
     assert!(error.message.contains("one batch"), "{}", error.message);
     assert_eq!(count(&repo, "audit"), audit_before);
 }
+
+// -- the Release Gate pair record (ADR 0026, section 4) ------------------------------------------
+
+fn create_pair(
+    repo: &Repo,
+    id: &str,
+    path: &str,
+    record: &Value,
+) -> Result<state::write::Written, ErrorBody> {
+    write(
+        &repo.state(),
+        &request(
+            id,
+            None,
+            None,
+            json!([{"op": "create", "path": path, "content": canonical(record)}]),
+        ),
+    )
+}
+
+#[test]
+fn a_pair_record_with_its_exact_fields_is_created_once() {
+    let repo = cut_over("pair-create");
+    let (path, record) = common::qa_store::pair_record();
+
+    create_pair(&repo, "op-1", &path, &record).unwrap();
+    let mut other = record.clone();
+    other["candidate_tree_sha"] = json!("0".repeat(40));
+    let again = create_pair(&repo, "op-2", &path, &other).unwrap_err();
+    let replaced = write(
+        &repo.state(),
+        &request(
+            "op-3",
+            None,
+            None,
+            json!([{"op": "replace", "path": path, "content": canonical(&other),
+                    "expected_revision": 1}]),
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        stored(&repo, &path).unwrap().0,
+        *record.as_object().unwrap()
+    );
+    assert_eq!(code(&again), ErrorCode::RevisionConflict);
+    assert_eq!(code(&replaced), ErrorCode::InvariantViolation);
+}
+
+#[test]
+fn a_pair_record_with_a_bad_id_an_extra_field_or_another_pair_id_is_an_invariant_violation() {
+    let repo = cut_over("pair-invalid");
+    let audit_before = count(&repo, "audit");
+    let (path, record) = common::qa_store::pair_record();
+    let mut bad_sha = record.clone();
+    bad_sha["candidate_tree_sha"] = json!("not-a-sha");
+    let mut extra = record.clone();
+    extra["recorded_at"] = json!("2026-10-30T00:00:00+00:00");
+    let mut other_id = record.clone();
+    other_id["pair_id"] = json!(format!("pair-{}", "0".repeat(32)));
+
+    for (index, broken) in [bad_sha, extra, other_id].iter().enumerate() {
+        let error = create_pair(&repo, &format!("op-{index}"), &path, broken).unwrap_err();
+
+        assert_eq!(code(&error), ErrorCode::InvariantViolation, "{broken}");
+    }
+    let elsewhere = format!("reports/integration-pair/pair-{}.json", "0".repeat(32));
+    let error = create_pair(&repo, "op-elsewhere", &elsewhere, &record).unwrap_err();
+    assert_eq!(code(&error), ErrorCode::InvariantViolation);
+    assert_eq!(count(&repo, "audit"), audit_before);
+    assert!(stored(&repo, &path).is_none());
+}

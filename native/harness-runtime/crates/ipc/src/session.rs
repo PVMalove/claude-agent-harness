@@ -139,6 +139,7 @@ impl Session {
             "state.read" => state_read(shared, &request),
             "state.write" => state_write(shared, &request, self.peer_pid),
             "qa.lane.inspect" => qa_lane_inspect(shared, &request),
+            "qa.evidence.verify" => qa_evidence_verify(shared, &request),
             "state.validate" => state_validate(shared, &request),
             "execution.launch" if supervised(shared, &request.operation) => {
                 answer(&request, shared.supervisor.launch(&request))
@@ -237,6 +238,8 @@ impl Session {
             features.push("qa.lane.inspect".to_owned());
             // The recovery records of a batch (ADR 0026): its operational hold and its intent.
             features.push("state.recovery".to_owned());
+            // The verdict on the stored QA evidence of a Release Gate pair (ADR 0021, section 7).
+            features.push("qa.evidence.verify".to_owned());
             if supervisor::Supervisor::supported() {
                 features.extend(supervisor::FEATURES.map(str::to_owned));
             }
@@ -420,6 +423,33 @@ fn qa_lane_inspect(shared: &Shared, request: &Request) -> Reply {
         );
     };
     match state::lease::inspect(state_dir) {
+        Ok(answer) => Reply {
+            response: Response::ok(id, answer),
+            close: false,
+        },
+        Err(error) => read_refusal(id, error),
+    }
+}
+
+/// `qa.evidence.verify` (`qa_evidence_verify` of ADR 0021, section 7): the verdict on the stored
+/// QA evidence of one Release Gate pair. It reads one snapshot of the store and writes nothing, so
+/// a repeat is safe; a refused pair is an `ok` answer whose verdict is `refused`.
+fn qa_evidence_verify(shared: &Shared, request: &Request) -> Reply {
+    let id = &request.operation_id;
+    let Some(state_dir) = shared.state_dir.as_deref() else {
+        return failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::NotFound,
+                FailureDomain::Policy,
+                false,
+                "this runtime serves no state",
+                "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
+            ),
+            false,
+        );
+    };
+    match state::qa_evidence::verify(state_dir, request.payload.as_ref()) {
         Ok(answer) => Reply {
             response: Response::ok(id, answer),
             close: false,
@@ -626,7 +656,7 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
-        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 5}));
+        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 6}));
         assert!(error.remedy.contains("update harness"));
         assert!(reply.close);
     }
@@ -864,6 +894,7 @@ mod tests {
             "state.validate",
             "qa.lane.inspect",
             "state.recovery",
+            "qa.evidence.verify",
         ];
         // The supervisor serves its operations where the platform supervises processes.
         if supervisor::Supervisor::supported() {
